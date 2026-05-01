@@ -1,98 +1,686 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# AuraVid Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS + MongoDB API powering authentication, video generation workflows, user studio pages, settings, and media management.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Setup
 
 ```bash
-$ yarn install
+yarn install
 ```
 
-## Compile and run the project
+## Run
 
 ```bash
 # development
-$ yarn run start
+yarn start:dev
 
-# watch mode
-$ yarn run start:dev
-
-# production mode
-$ yarn run start:prod
+# production build
+yarn build
+yarn start:prod
 ```
 
-## Run tests
+## Environment
 
-```bash
-# unit tests
-$ yarn run test
+Required:
 
-# e2e tests
-$ yarn run test:e2e
+- `MONGODB_URI`
+- `JWT_SECRET`
 
-# test coverage
-$ yarn run test:cov
+Optional:
+
+- `PORT` (default `3000`)
+- `JWT_EXPIRES_IN` (default `7d`)
+- `OTP_EXPIRES_MINUTES` (default `10`)
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_CALLBACK_URL`
+
+## API Overview
+
+Base URL: `http://localhost:3000`  
+Auth header for protected routes:
+
+```http
+Authorization: Bearer <access_token>
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Auth Endpoints (`/auth`)
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### `POST /auth/login`
+Validates email/password and returns an authenticated user session payload.
 
-```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
+**Request**
+```json
+{
+  "email": "user@example.com",
+  "password": "strongPassword123"
+}
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**Response**
+```json
+{
+  "access_token": "<jwt>",
+  "user": {
+    "id": "6813f3...",
+    "email": "user@example.com",
+    "firstName": "Adaeze",
+    "lastName": "Chukwu",
+    "phoneNumber": null,
+    "displayName": "Adaeze Chukwu"
+  }
+}
+```
 
-## Resources
+### `POST /auth/register`
+Registers a user directly (without OTP flow) and returns access token + user.
 
-Check out a few resources that may come in handy when working with NestJS:
+**Request**
+```json
+{
+  "firstName": "Adaeze",
+  "lastName": "Chukwu",
+  "email": "user@example.com",
+  "password": "strongPassword123",
+  "confirmPassword": "strongPassword123",
+  "termsAccepted": true
+}
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+**Response**
+```json
+{
+  "access_token": "<jwt>",
+  "user": {
+    "id": "6813f3...",
+    "email": "user@example.com",
+    "firstName": "Adaeze",
+    "lastName": "Chukwu",
+    "phoneNumber": null,
+    "displayName": "Adaeze Chukwu"
+  }
+}
+```
 
-## Support
+### `POST /auth/signup/request-otp`
+Sends signup OTP to email for staged account creation.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+**Request**
+```json
+{
+  "email": "user@example.com"
+}
+```
 
-## Stay in touch
+**Response**
+```json
+{
+  "message": "OTP sent"
+}
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+### `POST /auth/signup/resend-otp`
+Resends signup OTP to the same email.
 
-## License
+**Request**
+```json
+{
+  "email": "user@example.com"
+}
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Response**
+```json
+{
+  "message": "OTP sent"
+}
+```
+
+### `POST /auth/signup/verify-otp`
+Verifies signup OTP and returns a short-lived `setupToken`.
+
+**Request**
+```json
+{
+  "email": "user@example.com",
+  "code": "123456"
+}
+```
+
+**Response**
+```json
+{
+  "setupToken": "<jwt>"
+}
+```
+
+### Email verification aliases
+These routes currently reuse the signup OTP handlers and payload contracts:
+
+- `POST /auth/email-verification/request-otp`
+- `POST /auth/email-verification/resend-otp`
+- `POST /auth/email-verification/verify-otp`
+
+### `POST /auth/signup/complete`
+Completes OTP signup using `setupToken` and profile/password data.
+
+**Request**
+```json
+{
+  "setupToken": "<jwt>",
+  "firstName": "Adaeze",
+  "lastName": "Chukwu",
+  "password": "strongPassword123",
+  "confirmPassword": "strongPassword123",
+  "termsAccepted": true
+}
+```
+
+**Response**
+```json
+{
+  "access_token": "<jwt>",
+  "user": {
+    "id": "6813f3...",
+    "email": "user@example.com",
+    "firstName": "Adaeze",
+    "lastName": "Chukwu",
+    "phoneNumber": null,
+    "displayName": "Adaeze Chukwu"
+  }
+}
+```
+
+### Password reset aliases
+All routes below map to the same reset flow handlers and payload contracts:
+
+- `POST /auth/forgot-password`
+- `POST /auth/reset-password/request`
+- `POST /auth/reset-password/resend-otp`
+- `POST /auth/forgot-password/resend-otp`
+
+Sends reset OTP to an existing email.
+
+**Request**
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response**
+```json
+{
+  "message": "OTP sent"
+}
+```
+
+### OTP verify aliases
+- `POST /auth/reset-password/verify`
+- `POST /auth/forgot-password/verify`
+
+Validates reset OTP and returns `resetToken`.
+
+**Request**
+```json
+{
+  "email": "user@example.com",
+  "code": "123456"
+}
+```
+
+**Response**
+```json
+{
+  "resetToken": "<jwt>"
+}
+```
+
+### Reset complete aliases
+- `POST /auth/reset-password/complete`
+- `POST /auth/forgot-password/complete`
+
+Sets a new password and returns signed-in response.
+
+**Request**
+```json
+{
+  "resetToken": "<jwt>",
+  "password": "newStrongPassword123",
+  "confirmPassword": "newStrongPassword123"
+}
+```
+
+**Response**
+```json
+{
+  "access_token": "<jwt>",
+  "user": {
+    "id": "6813f3...",
+    "email": "user@example.com",
+    "firstName": "Adaeze",
+    "lastName": "Chukwu",
+    "phoneNumber": null,
+    "displayName": "Adaeze Chukwu"
+  }
+}
+```
+
+### `GET /auth/google`
+Starts Google OAuth login redirect.
+
+**Request**  
+No body.
+
+**Response**  
+Redirect handled by Passport Google strategy.
+
+### `GET /auth/google/callback`
+Completes Google OAuth login and returns standard auth response.
+
+**Request**  
+No body (provider callback).
+
+**Response**
+```json
+{
+  "access_token": "<jwt>",
+  "user": {
+    "id": "6813f3...",
+    "email": null,
+    "firstName": null,
+    "lastName": null,
+    "phoneNumber": null,
+    "displayName": "Google User"
+  }
+}
+```
+
+---
+
+## Video Studio Endpoints (`/video-studio`)
+
+### `GET /video-studio/options`
+Returns dropdown and creation-mode option data used by the creation screen.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "creationModes": [
+    { "id": "text_to_video", "label": "Text to video", "description": "Turn a written prompt into a narrated video" },
+    { "id": "photos_script", "label": "Photos + script", "description": "Upload photos and provide narration" },
+    { "id": "youtube_repurpose", "label": "YouTube repurpose", "description": "Repurpose a YouTube link into short-form content" },
+    { "id": "faceless_video", "label": "Faceless video", "description": "Generate niche faceless videos from a concept" }
+  ],
+  "dropdowns": {
+    "videoLengths": [
+      { "id": "short", "label": "Short (15-60s)" },
+      { "id": "medium", "label": "Medium (1-3m)" },
+      { "id": "long", "label": "Long (3-10m)" }
+    ],
+    "voiceStyles": [
+      { "id": "professional_male", "label": "Professional male" },
+      { "id": "professional_female", "label": "Professional female" },
+      { "id": "casual_upbeat", "label": "Casual upbeat" },
+      { "id": "documentary", "label": "Documentary" }
+    ],
+    "visualStyles": [
+      { "id": "cinematic", "label": "Cinematic" },
+      { "id": "minimal", "label": "Minimal" },
+      { "id": "vibrant", "label": "Vibrant" },
+      { "id": "news_style", "label": "News-style" }
+    ],
+    "niches": [
+      { "id": "finance", "label": "Finance" },
+      { "id": "motivation", "label": "Motivation" },
+      { "id": "tech", "label": "Tech" },
+      { "id": "health", "label": "Health" },
+      { "id": "lifestyle", "label": "Lifestyle" }
+    ],
+    "aspectRatios": [
+      { "id": "9:16", "label": "9:16 (Reels/TikTok)" },
+      { "id": "16:9", "label": "16:9 (YouTube)" },
+      { "id": "1:1", "label": "1:1 (Square)" }
+    ]
+  }
+}
+```
+
+### `POST /video-studio/projects`
+Creates a video generation project for one creation mode.
+
+**Request (common fields)**
+```json
+{
+  "mode": "text_to_video",
+  "videoLength": "short",
+  "title": "optional title"
+}
+```
+
+**Mode-specific required payload**
+
+- `text_to_video`: `prompt`, `voiceStyle`, `visualStyle`
+- `photos_script`: `photos` (url array), `script`
+- `youtube_repurpose`: `youtubeUrl` (optional: `additionalPhotos`, `customScript`)
+- `faceless_video`: `topic`, `niche`, `aspectRatio`
+
+**Response**
+```json
+{
+  "id": "6814ab...",
+  "mode": "text_to_video",
+  "title": "5 stocks to watch in Q3",
+  "status": "in_progress",
+  "progress": 5,
+  "videoLength": "short",
+  "durationSeconds": null,
+  "thumbnailUrl": null,
+  "outputVideoUrl": null,
+  "createdAt": "2026-05-01T12:20:00.000Z",
+  "updatedAt": "2026-05-01T12:20:00.000Z"
+}
+```
+
+### `GET /video-studio/projects`
+Lists user projects, filterable by status.
+
+**Request (query params)**
+```http
+/video-studio/projects?status=in_progress&limit=20
+```
+
+**Response**
+```json
+[
+  {
+    "id": "6814ab...",
+    "mode": "faceless_video",
+    "title": "Crypto beginner's guide",
+    "status": "in_progress",
+    "progress": 79,
+    "videoLength": "short",
+    "durationSeconds": null,
+    "thumbnailUrl": null,
+    "outputVideoUrl": null,
+    "createdAt": "2026-05-01T12:20:00.000Z",
+    "updatedAt": "2026-05-01T12:28:00.000Z"
+  }
+]
+```
+
+### `GET /video-studio/dashboard`
+Returns dashboard cards, recent completed videos, and current in-progress item.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "stats": {
+    "videosCreated": 24,
+    "minutesGenerated": 180,
+    "creditsLeft": 8
+  },
+  "recentVideos": [],
+  "inProgress": null
+}
+```
+
+---
+
+## Studio Endpoints (`/studio`)
+
+### `GET /studio/profile`
+Returns profile summary and credit usage shown on the profile page.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "id": "6813f3...",
+  "fullName": "Adaeze C.",
+  "email": "adaeze@example.com",
+  "planName": "PRO PLAN",
+  "memberSince": "2024-10-01T00:00:00.000Z",
+  "monthlyCredits": 100,
+  "creditsLeft": 8
+}
+```
+
+### `GET /studio/history`
+Returns generation audit/history rows.
+
+**Request (query params)**
+```http
+/studio/history?limit=30
+```
+
+**Response**
+```json
+[
+  {
+    "id": "6815b2...",
+    "status": "success",
+    "date": "2026-04-20T10:00:00.000Z",
+    "action": "Text to Video",
+    "detail": "5 stocks to watch...",
+    "costCredits": -1
+  }
+]
+```
+
+### `GET /studio/templates`
+Returns template categories and template cards (supports category + search filtering).
+
+**Request (query params)**
+```http
+/studio/templates?category=finance&search=crypto
+```
+
+**Response**
+```json
+{
+  "categories": ["all", "explainer", "social_media", "corporate", "finance", "lifestyle"],
+  "templates": [
+    {
+      "id": "crypto-daily-news",
+      "title": "Crypto Daily News",
+      "category": "finance",
+      "duration": "0:56",
+      "thumbnail": "https://placehold.co/400x240/1f2937/ffffff?text=📊"
+    }
+  ]
+}
+```
+
+### `GET /studio/assets`
+Returns media library assets (optional type filtering).
+
+**Request (query params)**
+```http
+/studio/assets?type=image
+```
+
+**Response**
+```json
+[
+  {
+    "id": "6815cf...",
+    "name": "Company_Logo.png",
+    "type": "image",
+    "sizeBytes": 1260000,
+    "url": "https://cdn.example.com/assets/company-logo.png",
+    "createdAt": "2026-04-12T12:00:00.000Z"
+  }
+]
+```
+
+### `POST /studio/assets`
+Creates a media-asset record after upload is completed by your storage service.
+
+**Request**
+```json
+{
+  "name": "Company_Logo.png",
+  "type": "image",
+  "sizeBytes": 1260000,
+  "url": "https://cdn.example.com/assets/company-logo.png"
+}
+```
+
+**Response**
+```json
+{
+  "id": "6815cf...",
+  "name": "Company_Logo.png",
+  "type": "image",
+  "sizeBytes": 1260000,
+  "url": "https://cdn.example.com/assets/company-logo.png",
+  "createdAt": "2026-04-12T12:00:00.000Z"
+}
+```
+
+---
+
+## Settings Endpoints (`/studio/settings`)
+
+### `GET /studio/settings/general`
+Returns language, timezone, and theme preference.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "language": "English (US)",
+  "timezone": "UTC-08:00 Pacific Time",
+  "themePreference": "dark"
+}
+```
+
+### `PATCH /studio/settings/general`
+Updates language, timezone, and theme preference.
+
+**Request**
+```json
+{
+  "language": "English (US)",
+  "timezone": "UTC-08:00 Pacific Time",
+  "themePreference": "dark"
+}
+```
+
+**Response**
+```json
+{
+  "language": "English (US)",
+  "timezone": "UTC-08:00 Pacific Time",
+  "themePreference": "dark"
+}
+```
+
+### `GET /studio/settings/notifications`
+Returns user notification toggle states.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "videoGenerationComplete": true,
+  "weeklyReport": false,
+  "productUpdates": true
+}
+```
+
+### `PATCH /studio/settings/notifications`
+Updates notification toggle states.
+
+**Request**
+```json
+{
+  "videoGenerationComplete": true,
+  "weeklyReport": false,
+  "productUpdates": true
+}
+```
+
+**Response**
+```json
+{
+  "videoGenerationComplete": true,
+  "weeklyReport": false,
+  "productUpdates": true
+}
+```
+
+### `GET /studio/settings/video-defaults`
+Returns default voice, caption style, and dropdown options.
+
+**Request**  
+No body.
+
+**Response**
+```json
+{
+  "defaultVoice": "professional_male",
+  "captionsStyle": "dynamic_word_by_word",
+  "options": {
+    "defaultVoice": [
+      { "id": "professional_male", "label": "Professional male" },
+      { "id": "professional_female", "label": "Professional female" }
+    ],
+    "captionsStyle": [
+      { "id": "dynamic_word_by_word", "label": "Dynamic word-by-word" },
+      { "id": "standard_lower_thirds", "label": "Standard lower-thirds" }
+    ]
+  }
+}
+```
+
+### `PATCH /studio/settings/video-defaults`
+Updates default voice and captions style.
+
+**Request**
+```json
+{
+  "defaultVoice": "professional_male",
+  "captionsStyle": "dynamic_word_by_word"
+}
+```
+
+**Response**
+```json
+{
+  "defaultVoice": "professional_male",
+  "captionsStyle": "dynamic_word_by_word",
+  "options": {
+    "defaultVoice": [
+      { "id": "professional_male", "label": "Professional male" },
+      { "id": "professional_female", "label": "Professional female" }
+    ],
+    "captionsStyle": [
+      { "id": "dynamic_word_by_word", "label": "Dynamic word-by-word" },
+      { "id": "standard_lower_thirds", "label": "Standard lower-thirds" }
+    ]
+  }
+}
+```
+
+---
+
+## Notes
+
+- All request payloads are validated with Nest `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
+- Facebook OAuth endpoints were removed intentionally; only Google OAuth is exposed.

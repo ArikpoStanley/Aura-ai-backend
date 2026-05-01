@@ -14,6 +14,12 @@ import {
   CreationMode,
 } from './dto/create-video-project.dto';
 import {
+  CreateFacelessVideoDto,
+  CreatePhotosScriptDto,
+  CreateTextToVideoDto,
+  CreateYoutubeRepurposeDto,
+} from './dto/create-by-mode.dto';
+import {
   ListVideoProjectsDto,
   VideoProjectStatus,
 } from './dto/list-video-projects.dto';
@@ -72,6 +78,34 @@ export class VideoStudioService {
       aspectRatio: dto.aspectRatio,
     });
     return this.toProjectCard(project);
+  }
+
+  async createTextToVideo(userId: string, dto: CreateTextToVideoDto) {
+    return this.createProject(userId, {
+      mode: CreationMode.TextToVideo,
+      ...dto,
+    });
+  }
+
+  async createPhotosScript(userId: string, dto: CreatePhotosScriptDto) {
+    return this.createProject(userId, {
+      mode: CreationMode.PhotosScript,
+      ...dto,
+    });
+  }
+
+  async createYoutubeRepurpose(userId: string, dto: CreateYoutubeRepurposeDto) {
+    return this.createProject(userId, {
+      mode: CreationMode.YoutubeRepurpose,
+      ...dto,
+    });
+  }
+
+  async createFacelessVideo(userId: string, dto: CreateFacelessVideoDto) {
+    return this.createProject(userId, {
+      mode: CreationMode.FacelessVideo,
+      ...dto,
+    });
   }
 
   async listProjects(userId: string, query: ListVideoProjectsDto) {
