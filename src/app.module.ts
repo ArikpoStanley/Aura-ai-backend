@@ -4,6 +4,8 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { StudioModule } from './studio/studio.module';
+import { VideoStudioModule } from './video-studio/video-studio.module';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { AuthModule } from './auth/auth.module';
       inject: [ConfigService],
     }),
     AuthModule,
+    VideoStudioModule,
+    StudioModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -117,7 +117,11 @@ export class AuthService {
     if (existing) {
       throw new ConflictException('Email already registered');
     }
-    const ok = await this.usersService.verifyOtpAndDelete(email, 'signup', dto.code);
+    const ok = await this.usersService.verifyOtpAndDelete(
+      email,
+      'signup',
+      dto.code,
+    );
     if (!ok) {
       throw new BadRequestException('Invalid OTP');
     }
@@ -161,12 +165,7 @@ export class AuthService {
     }
     const code = this.generateOtp();
     const expiresAt = new Date(Date.now() + this.otpTtlMs);
-    await this.usersService.upsertOtp(
-      email,
-      'reset_password',
-      code,
-      expiresAt,
-    );
+    await this.usersService.upsertOtp(email, 'reset_password', code, expiresAt);
     if (this.config.get<string>('NODE_ENV') !== 'production') {
       this.logger.log(`[DEV] Password reset OTP for ${email}: ${code}`);
     }

@@ -55,6 +55,15 @@ export class UsersService {
     return this.userModel.findById(id).exec();
   }
 
+  async updateById(
+    userId: string,
+    updates: Partial<User>,
+  ): Promise<UserDocument | null> {
+    return this.userModel
+      .findByIdAndUpdate(userId, { $set: updates }, { new: true })
+      .exec();
+  }
+
   async createWithPhoneAndPassword(
     phoneNumber: string,
     plainPassword: string,

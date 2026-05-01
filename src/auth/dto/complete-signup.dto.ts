@@ -1,4 +1,4 @@
-import { IsJWT, IsString, MinLength } from 'class-validator';
+import { Equals, IsBoolean, IsJWT, IsString, MinLength } from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
 
 export class CompleteSignupDto {
@@ -19,4 +19,8 @@ export class CompleteSignupDto {
   @MinLength(8)
   @Match('password', { message: 'Password not match! Check again' })
   confirmPassword: string;
+
+  @IsBoolean({ message: 'termsAccepted must be a boolean' })
+  @Equals(true, { message: 'You must accept terms and conditions' })
+  termsAccepted: boolean;
 }

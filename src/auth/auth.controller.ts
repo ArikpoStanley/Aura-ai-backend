@@ -114,16 +114,4 @@ export class AuthController {
   googleCallback(@Req() req: OAuthReq) {
     return this.authService.oauthLogin(req.user.userId);
   }
-
-  @Get('facebook')
-  @UseGuards(AuthGuard('facebook'))
-  facebookAuth(): void {
-    /* redirects to Facebook */
-  }
-
-  @Get('facebook/callback')
-  @UseGuards(AuthGuard('facebook'))
-  facebookCallback(@Req() req: OAuthReq) {
-    return this.authService.oauthLogin(req.user.userId);
-  }
 }

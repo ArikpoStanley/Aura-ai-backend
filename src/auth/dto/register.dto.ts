@@ -1,4 +1,10 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import {
+  Equals,
+  IsBoolean,
+  IsEmail,
+  IsString,
+  MinLength,
+} from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
 
 /** Direct sign-up without OTP (useful for testing; production may prefer the signup OTP flow). */
@@ -20,4 +26,8 @@ export class RegisterDto {
   @MinLength(8)
   @Match('password', { message: 'Password not match! Check again' })
   confirmPassword: string;
+
+  @IsBoolean({ message: 'termsAccepted must be a boolean' })
+  @Equals(true, { message: 'You must accept terms and conditions' })
+  termsAccepted: boolean;
 }

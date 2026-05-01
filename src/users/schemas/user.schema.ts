@@ -28,6 +28,48 @@ export class User {
 
   @Prop({ trim: true })
   lastName?: string;
+
+  @Prop({ trim: true })
+  timezone?: string;
+
+  @Prop({ trim: true })
+  language?: string;
+
+  @Prop({ enum: ['light', 'dark', 'system'], default: 'dark' })
+  themePreference?: 'light' | 'dark' | 'system';
+
+  @Prop({ default: true })
+  notificationsVideoComplete?: boolean;
+
+  @Prop({ default: false })
+  notificationsWeeklyReport?: boolean;
+
+  @Prop({ default: true })
+  notificationsProductUpdates?: boolean;
+
+  @Prop({
+    enum: ['professional_male', 'professional_female'],
+    default: 'professional_male',
+  })
+  defaultVoice?: 'professional_male' | 'professional_female';
+
+  @Prop({
+    enum: ['dynamic_word_by_word', 'standard_lower_thirds'],
+    default: 'dynamic_word_by_word',
+  })
+  captionsStyle?: 'dynamic_word_by_word' | 'standard_lower_thirds';
+
+  @Prop({ default: 100 })
+  monthlyCredits?: number;
+
+  @Prop({ default: 8 })
+  creditsLeft?: number;
+
+  @Prop()
+  planName?: string;
+
+  @Prop()
+  memberSince?: Date;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
