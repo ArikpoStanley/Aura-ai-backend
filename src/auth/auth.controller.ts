@@ -1,6 +1,17 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '@nestjs/passport';
 import type { Request } from 'express';
+import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { CompleteResetPasswordDto } from './dto/complete-reset.dto';
 import { CompleteSignupDto } from './dto/complete-signup.dto';
@@ -15,7 +26,10 @@ type OAuthReq = Request & { user: { userId: string } };
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Post('login')
   login(@Body() dto: LoginDto) {
@@ -111,7 +125,23 @@ export class AuthController {
 
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
-  googleCallback(@Req() req: OAuthReq) {
-    return this.authService.oauthLogin(req.user.userId);
+  async googleCallback(@Req() req: OAuthReq, @Res() res: Response) {
+    if (!req.user?.userId) {
+      throw new UnauthorizedException('Google authentication failed');
+    }
+    const authPayload = await this.authService.oauthLogin(req.user.userId);
+    const frontendRedirectUrl = this.config.get<string>(
+      'GOOGLE_AUTH_SUCCESS_REDIRECT_URL',
+    );
+
+    if (!frontendRedirectUrl) {
+      return res.json(authPayload);
+    }
+
+    const fragment = new URLSearchParams({
+      access_token: authPayload.access_token,
+      user: JSON.stringify(authPayload.user),
+    }).toString();
+    return res.redirect(`${frontendRedirectUrl}#${fragment}`);
   }
 }
