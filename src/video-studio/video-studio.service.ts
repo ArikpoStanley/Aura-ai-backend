@@ -27,6 +27,7 @@ import {
   VideoProject,
   VideoProjectDocument,
 } from './schemas/video-project.schema';
+import { VideoStudioGenerationService } from './video-studio-generation.service';
 
 type DashboardStats = {
   videosCreated: number;
@@ -39,6 +40,7 @@ export class VideoStudioService {
   constructor(
     @InjectModel(VideoProject.name)
     private readonly projectModel: Model<VideoProjectDocument>,
+    private readonly videoStudioGeneration: VideoStudioGenerationService,
   ) {}
 
   getCreationOptions() {
@@ -77,6 +79,10 @@ export class VideoStudioService {
       niche: dto.niche,
       aspectRatio: dto.aspectRatio,
     });
+    this.videoStudioGeneration.scheduleProjectGeneration(
+      project._id.toString(),
+      userId,
+    );
     return this.toProjectCard(project);
   }
 

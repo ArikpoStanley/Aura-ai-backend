@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AiModule } from '../ai/ai.module';
 import {
   VideoProject,
   VideoProjectSchema,
 } from './schemas/video-project.schema';
 import { VideoStudioController } from './video-studio.controller';
+import { VideoStudioGenerationService } from './video-studio-generation.service';
 import { VideoStudioService } from './video-studio.service';
 
 @Module({
@@ -12,8 +14,9 @@ import { VideoStudioService } from './video-studio.service';
     MongooseModule.forFeature([
       { name: VideoProject.name, schema: VideoProjectSchema },
     ]),
+    AiModule,
   ],
   controllers: [VideoStudioController],
-  providers: [VideoStudioService],
+  providers: [VideoStudioService, VideoStudioGenerationService],
 })
 export class VideoStudioModule {}

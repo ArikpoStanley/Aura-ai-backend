@@ -8,5 +8,6 @@ import { ReplicateService } from './services/replicate.service';
 @Module({
   controllers: [AiController],
   providers: [AiService, AnthropicService, ReplicateService, CloudinaryService],
+  exports: [AiService],
 })
 export class AiModule {}

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AnthropicService } from './services/anthropic.service';
 import { CloudinaryService } from './services/cloudinary.service';
@@ -143,6 +143,176 @@ export class AiService {
         duration: uploaded.duration,
         format: uploaded.format,
       },
+    };
+  }
+
+  /**
+   * Video creation modes → `REPLICATE_VIDEO_MODEL` (text / faceless / repurpose).
+   * Photos+script → `REPLICATE_IMAGE_MODEL` (keyframe / thumbnail still).
+   */
+
+  async studioTextToVideo(
+    userId: string,
+    args: { prompt: string; voiceStyle: string; visualStyle: string },
+  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+    const enriched = await this.anthropicService.generateVideoPrompt({
+      idea: args.prompt,
+      tone: args.voiceStyle.replaceAll('_', ' '),
+      style: args.visualStyle.replaceAll('_', ' '),
+      targetAudience: 'general',
+    });
+    return this.runVideoModelAndUpload(
+      userId,
+      enriched,
+      'auravid/creation/text-to-video',
+    );
+  }
+
+  async studioFacelessVideo(
+    userId: string,
+    args: { topic: string; niche: string; aspectRatio: string },
+  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+    const idea = `Faceless ${args.niche} video about: ${args.topic}. Target framing: ${args.aspectRatio}.`;
+    const enriched = await this.anthropicService.generateVideoPrompt({
+      idea,
+      tone: 'clear and engaging',
+      style: 'faceless social video',
+      targetAudience: args.niche,
+    });
+    return this.runVideoModelAndUpload(
+      userId,
+      enriched,
+      'auravid/creation/faceless-video',
+    );
+  }
+
+  async studioYoutubeRepurpose(
+    userId: string,
+    args: {
+      youtubeUrl: string;
+      customScript?: string;
+      additionalPhotos: string[];
+    },
+  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+    const idea = [
+      'Repurpose this into a fresh short-form video.',
+      `Source: ${args.youtubeUrl}`,
+      args.customScript ? `Director notes: ${args.customScript}` : null,
+      args.additionalPhotos.length
+        ? `Reference image URLs: ${args.additionalPhotos.join(' | ')}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const enriched = await this.anthropicService.generateVideoPrompt({
+      idea,
+      tone: 'punchy',
+      style: 'repurposed viral short',
+      targetAudience: 'general',
+    });
+
+    try {
+      return await this.runVideoModelAndUpload(
+        userId,
+        enriched,
+        'auravid/creation/youtube-repurpose',
+        { video: args.youtubeUrl },
+      );
+    } catch (firstError) {
+      const fallbackPrompt = `${enriched}\n\n(Context: source was ${args.youtubeUrl} — generate a new standalone short that captures the same intent.)`;
+      try {
+        return await this.runVideoModelAndUpload(
+          userId,
+          fallbackPrompt,
+          'auravid/creation/youtube-repurpose',
+        );
+      } catch {
+        throw firstError instanceof BadGatewayException
+          ? firstError
+          : new BadGatewayException(
+              firstError instanceof Error
+                ? firstError.message
+                : 'Video generation failed',
+            );
+      }
+    }
+  }
+
+  async studioPhotosScriptImage(
+    userId: string,
+    args: { photos: string[]; script: string },
+  ): Promise<{ secureUrl: string | null }> {
+    const idea = [
+      'Create one hero still / keyframe image for a photo-driven narrated video.',
+      `Script / narration direction: ${args.script}`,
+      `Reference photo URLs (match mood and subject continuity): ${args.photos.join(' | ')}`,
+    ].join('\n');
+
+    const enriched = await this.anthropicService.generateVideoPrompt({
+      idea,
+      tone: 'warm',
+      style: 'high-end thumbnail still, sharp subject, readable at small size',
+      targetAudience: 'social feed viewers',
+    });
+
+    const input: Record<string, unknown> = { prompt: enriched };
+    const useImageInput =
+      this.config.get<string>('REPLICATE_PHOTOS_SCRIPT_IMAGE_INPUT', 'true') !==
+      'false';
+    const firstPhoto = args.photos[0];
+    if (useImageInput && firstPhoto) {
+      input.image = firstPhoto;
+    }
+
+    const prediction = await this.replicateService.runModel({
+      model: this.defaultImageModel,
+      input,
+      timeoutMs: 180_000,
+    });
+
+    const firstOutputUrl = prediction.outputUrls[0];
+    if (!firstOutputUrl) {
+      return { secureUrl: null };
+    }
+
+    const uploaded = await this.cloudinaryService.uploadFromUrl({
+      sourceUrl: firstOutputUrl,
+      folder: 'auravid/creation/photos-script',
+      publicIdPrefix: `user-${userId}`,
+      resourceType: 'image',
+    });
+
+    return { secureUrl: uploaded.secure_url || null };
+  }
+
+  private async runVideoModelAndUpload(
+    userId: string,
+    prompt: string,
+    folder: string,
+    extraInput: Record<string, unknown> = {},
+  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+    const prediction = await this.replicateService.runModel({
+      model: this.defaultVideoModel,
+      input: { prompt, ...extraInput },
+      timeoutMs: 300_000,
+    });
+
+    const firstOutputUrl = prediction.outputUrls[0];
+    if (!firstOutputUrl) {
+      return { secureUrl: null };
+    }
+
+    const uploaded = await this.cloudinaryService.uploadFromUrl({
+      sourceUrl: firstOutputUrl,
+      folder,
+      publicIdPrefix: `user-${userId}`,
+      resourceType: 'video',
+    });
+
+    return {
+      secureUrl: uploaded.secure_url || null,
+      durationSeconds: uploaded.duration,
     };
   }
 }
