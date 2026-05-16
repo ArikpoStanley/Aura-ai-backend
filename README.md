@@ -21,19 +21,48 @@ yarn start:prod
 
 ## Environment
 
-Required:
+Copy `.env.example` to `.env` and fill in values.
 
-- `MONGODB_URI`
-- `JWT_SECRET`
+**Required**
 
-Optional:
+| Variable | Purpose |
+|----------|---------|
+| `MONGODB_URI` | MongoDB connection string |
+| `JWT_SECRET` | Signs access tokens |
 
-- `PORT` (default `3000`)
-- `JWT_EXPIRES_IN` (default `7d`)
-- `OTP_EXPIRES_MINUTES` (default `10`)
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_CALLBACK_URL`
+**Auth / server**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `3000` | HTTP port |
+| `CORS_ORIGIN` | — | Allowed browser origin(s) for the frontend |
+| `JWT_EXPIRES_IN` | `7d` | Access token lifetime |
+| `OTP_EXPIRES_MINUTES` | `10` | OTP validity |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enable Google OAuth (omit both to disable) |
+| `GOOGLE_CALLBACK_URL` | — | Backend callback, e.g. `http://localhost:3000/auth/google/callback` |
+| `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` | — | If set, OAuth redirects here with tokens in the URL hash (see Auth) |
+
+**AI / media (required for video generation)**
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | Prompt engineering (ChatGPT) |
+| `OPENAI_MODEL` | e.g. `gpt-4o-mini` |
+| `REPLICATE_API_TOKEN` | Video/image generation |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Uploaded output storage |
+
+**Generation behavior (optional)**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GENERATION_DEFAULT_LANGUAGE` | `en` | English (US) for prompts, dialogue, and on-screen text |
+| `REPLICATE_VIDEO_GENERATE_AUDIO` | `true` | Use Kling with native audio (Wan models are silent) |
+| `REPLICATE_USE_PREMIUM` | `false` | Prefer `*_PREMIUM` Replicate model env vars |
+| `REPLICATE_LONG_VIDEO_TARGET_SECONDS` | `180` | Target duration when `videoLength` is `long` |
+| `REPLICATE_SEGMENT_MAX_SECONDS` | `15` | Seconds per segment (Replicate clip cap) |
+| `REPLICATE_LONG_VIDEO_MAX_SEGMENTS` | `12` | Max clips for one `long` project |
+
+See `.env.example` for full Replicate model routing variables.
 
 ## API Overview
 
@@ -43,6 +72,107 @@ Auth header for protected routes:
 ```http
 Authorization: Bearer <access_token>
 ```
+
+There is **no** `/api/v1` prefix — routes are mounted at the root (e.g. `http://localhost:3000/video-studio/projects`).
+
+---
+
+## Frontend integration guide
+
+Use this section when wiring the React (or other) client to the backend.
+
+### Authentication
+
+1. **Email/password** — `POST /auth/login` or complete signup; store `access_token` (memory, secure cookie, or `localStorage` per your security model).
+2. **Google** — Redirect the browser to `GET /auth/google`. After success:
+   - If `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` is set: user lands on your page with  
+     `#access_token=<jwt>&user=<url-encoded-json>`  
+     Parse the hash on the success route (e.g. `/auth/google/success`).
+   - If not set: callback returns JSON `{ access_token, user }` (API-only / Postman).
+3. Send `Authorization: Bearer <access_token>` on all protected routes (`/video-studio/*`, `/studio/*`, `/ai/*`).
+
+### Async video projects (critical)
+
+Video Studio **does not** return finished media on `POST`. Generation runs in the background (Replicate + Cloudinary).
+
+| Step | Action |
+|------|--------|
+| 1 | `POST /video-studio/projects/...` → `status: "in_progress"`, `progress: 5`, `outputVideoUrl: null` |
+| 2 | Poll `GET /video-studio/projects?status=in_progress` or `GET /video-studio/dashboard` every **2–5s** |
+| 3 | When `status === "completed"`, read `outputVideoUrl`, `outputVideoUrls`, `hasAudio`, `durationSeconds` |
+| 4 | On `status === "failed"`, show retry; `progress` resets to `0` |
+
+Do **not** treat `null` URLs on create as an error — that is expected until polling completes.
+
+### Project card fields (list, dashboard, create response)
+
+All project endpoints return the same **project card** shape:
+
+```json
+{
+  "id": "6814ab...",
+  "mode": "text_to_video",
+  "title": "My video",
+  "status": "completed",
+  "progress": 100,
+  "videoLength": "long",
+  "durationSeconds": 180,
+  "thumbnailUrl": "https://res.cloudinary.com/.../thumb.mp4",
+  "outputVideoUrl": "https://res.cloudinary.com/.../segment-1.mp4",
+  "outputVideoUrls": [
+    "https://res.cloudinary.com/.../segment-1.mp4",
+    "https://res.cloudinary.com/.../segment-2.mp4"
+  ],
+  "hasAudio": true,
+  "createdAt": "2026-05-01T12:20:00.000Z",
+  "updatedAt": "2026-05-01T12:45:00.000Z"
+}
+```
+
+| Field | Frontend usage |
+|-------|----------------|
+| `status` | `in_progress` \| `completed` \| `failed` |
+| `progress` | 0–100; updates during multi-segment `long` jobs (~20→90 per segment) |
+| `outputVideoUrl` | Primary playback URL (first segment when `long`) |
+| `outputVideoUrls` | **All segments** in order — use for playlist UI or client-side stitching |
+| `hasAudio` | `true` when Kling audio was requested (`REPLICATE_VIDEO_GENERATE_AUDIO`); Wan-only outputs are `false` |
+| `durationSeconds` | Sum of segment durations (approximate) |
+| `videoLength` | User-selected tier: `short` \| `medium` \| `long` (see below) |
+
+### `videoLength` — UI labels vs backend behavior
+
+Dropdown labels in `GET /video-studio/options` are marketing-friendly. **Actual generation:**
+
+| `videoLength` | Backend behavior |
+|---------------|------------------|
+| `short` | Single clip, ~**5s** |
+| `medium` | Single clip, ~**10s** |
+| `long` | Up to **12** clips × **15s** each (default total ~**3 min** / 180s). Multiple URLs in `outputVideoUrls`. |
+
+Recommend showing estimated time/cost in the UI for `long` (many sequential Replicate jobs). There is **no** single merged MP4 from the API yet — play segments in sequence or stitch on the client.
+
+### Language
+
+All generated prompts and video audio/text default to **English (US)** (`GENERATION_DEFAULT_LANGUAGE=en`). Non-English content should only appear if the user’s prompt explicitly asks for another language.
+
+### Recommended creation endpoints
+
+Prefer **mode-specific** routes (stricter validation) over the generic `POST /video-studio/projects`:
+
+| Mode | Endpoint |
+|------|----------|
+| Text to video | `POST /video-studio/projects/text-to-video` |
+| Photos + script | `POST /video-studio/projects/photos-script` |
+| YouTube repurpose | `POST /video-studio/projects/youtube-repurpose` |
+| Faceless video | `POST /video-studio/projects/faceless-video` |
+
+### Photos + script edge case
+
+If animation fails or `REPLICATE_PHOTOS_SCRIPT_ANIMATE_VIDEO=false`, the project may complete with a **still image** only (`outputVideoUrl` = keyframe, `hasAudio: false`). Treat `outputVideoUrls.length === 0` with a non-null `outputVideoUrl` as image-only success.
+
+### CORS
+
+Set `CORS_ORIGIN` to your frontend origin (e.g. `http://localhost:5173`). Production: your deployed app URL.
 
 ---
 
@@ -278,29 +408,35 @@ No body.
 Redirect handled by Passport Google strategy.
 
 ### `GET /auth/google/callback`
-Completes Google OAuth login and returns standard auth response.
+Completes Google OAuth (browser redirect from Google).
 
 **Request**  
 No body (provider callback).
 
-**Response**
+**Response (if `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` is unset)**  
+JSON:
+
 ```json
 {
   "access_token": "<jwt>",
-  "user": {
-    "id": "6813f3...",
-    "email": null,
-    "firstName": null,
-    "lastName": null,
-    "phoneNumber": null,
-    "displayName": "Google User"
-  }
+  "user": { "id": "6813f3...", "email": "user@gmail.com", "displayName": "..." }
 }
 ```
+
+**Response (if `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` is set)**  
+HTTP `302` to:
+
+```http
+https://your-frontend.com/auth/google/success#access_token=<jwt>&user=<url-encoded-user-json>
+```
+
+Parse `window.location.hash` on the frontend success page.
 
 ---
 
 ## Video Studio Endpoints (`/video-studio`)
+
+Protected with JWT. Projects are generated **asynchronously** — see [Frontend integration guide](#frontend-integration-guide).
 
 ### `GET /video-studio/options`
 Returns dropdown and creation-mode option data used by the creation screen.
@@ -352,7 +488,7 @@ No body.
 ```
 
 ### `POST /video-studio/projects`
-Creates a video generation project for one creation mode.
+Generic create (all modes). Prefer the mode-specific routes below when possible.
 
 **Request (common fields)**
 ```json
@@ -363,14 +499,15 @@ Creates a video generation project for one creation mode.
 }
 ```
 
-**Mode-specific required payload**
+**Mode-specific required fields**
 
 - `text_to_video`: `prompt`, `voiceStyle`, `visualStyle`
-- `photos_script`: `photos` (url array), `script`
+- `photos_script`: `photos` (URL array, max 12), `script`
 - `youtube_repurpose`: `youtubeUrl` (optional: `additionalPhotos`, `customScript`)
 - `faceless_video`: `topic`, `niche`, `aspectRatio`
 
-**Response**
+**Response** — project card; media fields are `null` until generation finishes.
+
 ```json
 {
   "id": "6814ab...",
@@ -382,8 +519,61 @@ Creates a video generation project for one creation mode.
   "durationSeconds": null,
   "thumbnailUrl": null,
   "outputVideoUrl": null,
+  "outputVideoUrls": [],
+  "hasAudio": false,
   "createdAt": "2026-05-01T12:20:00.000Z",
   "updatedAt": "2026-05-01T12:20:00.000Z"
+}
+```
+
+### `POST /video-studio/projects/text-to-video`
+
+**Request**
+```json
+{
+  "title": "optional",
+  "prompt": "Explain compound interest for beginners",
+  "voiceStyle": "professional_male",
+  "visualStyle": "cinematic",
+  "videoLength": "medium"
+}
+```
+
+### `POST /video-studio/projects/photos-script`
+
+**Request**
+```json
+{
+  "title": "optional",
+  "photos": ["https://cdn.example.com/photo1.jpg"],
+  "script": "Narration script here...",
+  "videoLength": "short"
+}
+```
+
+### `POST /video-studio/projects/youtube-repurpose`
+
+**Request**
+```json
+{
+  "title": "optional",
+  "youtubeUrl": "https://www.youtube.com/watch?v=...",
+  "additionalPhotos": ["https://cdn.example.com/frame.jpg"],
+  "customScript": "optional director notes",
+  "videoLength": "long"
+}
+```
+
+### `POST /video-studio/projects/faceless-video`
+
+**Request**
+```json
+{
+  "title": "optional",
+  "topic": "5 habits that build wealth",
+  "niche": "finance",
+  "aspectRatio": "9:16",
+  "videoLength": "short"
 }
 ```
 
@@ -395,7 +585,8 @@ Lists user projects, filterable by status.
 /video-studio/projects?status=in_progress&limit=20
 ```
 
-**Response**
+**Response** — array of project cards (same shape as create; includes `outputVideoUrls`, `hasAudio` when completed).
+
 ```json
 [
   {
@@ -404,15 +595,19 @@ Lists user projects, filterable by status.
     "title": "Crypto beginner's guide",
     "status": "in_progress",
     "progress": 79,
-    "videoLength": "short",
+    "videoLength": "long",
     "durationSeconds": null,
     "thumbnailUrl": null,
     "outputVideoUrl": null,
+    "outputVideoUrls": [],
+    "hasAudio": false,
     "createdAt": "2026-05-01T12:20:00.000Z",
     "updatedAt": "2026-05-01T12:28:00.000Z"
   }
 ]
 ```
+
+**Query `status` values:** `in_progress`, `completed`, `failed`
 
 ### `GET /video-studio/dashboard`
 Returns dashboard cards, recent completed videos, and current in-progress item.
@@ -430,6 +625,102 @@ No body.
   },
   "recentVideos": [],
   "inProgress": null
+}
+```
+
+---
+
+## AI Endpoints (`/ai`)
+
+Protected with JWT. Used for standalone tools and internal studio flows. Video studio projects call the same stack in the background.
+
+### `POST /ai/prompts/generate`
+Expands an idea into a production-ready prompt (OpenAI). Output is English by default.
+
+**Request**
+```json
+{
+  "idea": "A 30 second ad for a coffee brand",
+  "tone": "warm",
+  "style": "cinematic",
+  "targetAudience": "millennials"
+}
+```
+
+**Response**
+```json
+{
+  "prompt": "Cinematic close-up of espresso pouring..."
+}
+```
+
+### `POST /ai/images/generate`
+Generates an image via Replicate, uploads to Cloudinary.
+
+**Request**
+```json
+{
+  "prompt": "Minimal product shot of a smartwatch",
+  "style": "studio lighting",
+  "aspectRatio": "1:1",
+  "negativePrompt": "optional"
+}
+```
+
+**Response**
+```json
+{
+  "predictionId": "...",
+  "model": "black-forest-labs/flux-schnell",
+  "outputs": ["https://replicate.delivery/..."],
+  "cloudinary": {
+    "publicId": "auravid/generated-images/...",
+    "secureUrl": "https://res.cloudinary.com/...",
+    "width": 1024,
+    "height": 1024
+  }
+}
+```
+
+### `POST /ai/characters/generate`
+Character portrait (OpenAI prompt + Flux).
+
+**Request**
+```json
+{
+  "name": "Maya",
+  "description": "Tech founder, mid-30s, confident",
+  "style": "semi-realistic",
+  "mood": "optimistic"
+}
+```
+
+### `POST /ai/videos/remix`
+Remix/transform a source video URL.
+
+**Request**
+```json
+{
+  "sourceVideoUrl": "https://cdn.example.com/source.mp4",
+  "instruction": "Make it more energetic, add motion",
+  "model": "optional override",
+  "inputOverrides": {}
+}
+```
+
+**Response**
+```json
+{
+  "predictionId": "...",
+  "model": "kwaivgi/kling-v3-video",
+  "prompt": "...",
+  "outputs": ["https://replicate.delivery/..."],
+  "cloudinary": {
+    "publicId": "...",
+    "secureUrl": "https://res.cloudinary.com/.../video.mp4",
+    "duration": 8,
+    "format": "mp4"
+  }
 }
 ```
 
@@ -683,4 +974,7 @@ Updates default voice and captions style.
 ## Notes
 
 - All request payloads are validated with Nest `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
-- Facebook OAuth endpoints were removed intentionally; only Google OAuth is exposed.
+- Facebook OAuth was removed; only Google OAuth is exposed.
+- Video generation requires outbound access to `api.replicate.com`, OpenAI, and Cloudinary from the server.
+- Rate limiting: global throttler (`THROTTLE_TTL_SECONDS`, `THROTTLE_LIMIT`).
+- Production example base URL (if deployed): `https://aura-ai-backend-eight.vercel.app` — use the same route paths as local.
