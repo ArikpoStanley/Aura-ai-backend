@@ -46,6 +46,13 @@ export class VideoProject {
   @Prop()
   outputVideoUrl?: string;
 
+  /** Ordered segment URLs for long (`videoLength: long`) multi-clip renders. */
+  @Prop({ type: [String], default: [] })
+  outputVideoUrls: string[];
+
+  @Prop({ default: false })
+  hasAudio: boolean;
+
   @Prop({ enum: Object.values(VoiceStyle) })
   voiceStyle?: VoiceStyle;
 

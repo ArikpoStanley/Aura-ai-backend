@@ -238,6 +238,8 @@ export class VideoStudioService {
       durationSeconds: project.durationSeconds ?? null,
       thumbnailUrl: project.thumbnailUrl ?? null,
       outputVideoUrl: project.outputVideoUrl ?? null,
+      outputVideoUrls: project.outputVideoUrls ?? [],
+      hasAudio: project.hasAudio ?? false,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };

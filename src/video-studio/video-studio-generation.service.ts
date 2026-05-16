@@ -40,9 +40,10 @@ export class VideoStudioGenerationService {
 
     try {
       if (project.mode === CreationMode.PhotosScript) {
-        const out = await this.aiService.studioPhotosScriptImage(userId, {
+        const out = await this.aiService.studioPhotosScript(userId, {
           photos: project.photos ?? [],
           script: project.script ?? '',
+          videoLength: project.videoLength,
         });
         await this.projectModel
           .updateOne(
@@ -51,23 +52,42 @@ export class VideoStudioGenerationService {
               $set: {
                 status: VideoProjectStatus.Completed,
                 progress: 100,
-                thumbnailUrl: out.secureUrl ?? null,
-                outputVideoUrl: null,
+                thumbnailUrl: out.thumbnailUrl ?? out.secureUrl ?? null,
+                outputVideoUrl: out.isVideo ? (out.secureUrl ?? null) : null,
+                outputVideoUrls:
+                  out.isVideo && 'outputVideoUrls' in out
+                    ? (out.outputVideoUrls ?? [])
+                    : [],
+                hasAudio:
+                  out.isVideo && 'hasAudio' in out ? Boolean(out.hasAudio) : false,
+                durationSeconds: out.durationSeconds,
               },
-              $unset: { durationSeconds: '' },
             },
           )
           .exec();
         return;
       }
 
-      let out: { secureUrl: string | null; durationSeconds?: number };
+      const onProgress = async (progress: number) => {
+        await this.projectModel
+          .updateOne({ _id: projectId }, { $set: { progress } })
+          .exec();
+      };
+
+      let out: {
+        secureUrl: string | null;
+        durationSeconds?: number;
+        outputVideoUrls?: string[];
+        hasAudio?: boolean;
+      };
       switch (project.mode) {
         case CreationMode.TextToVideo:
           out = await this.aiService.studioTextToVideo(userId, {
             prompt: project.prompt ?? '',
             voiceStyle: project.voiceStyle ?? 'professional_male',
             visualStyle: project.visualStyle ?? 'cinematic',
+            videoLength: project.videoLength,
+            onProgress,
           });
           break;
         case CreationMode.FacelessVideo:
@@ -75,6 +95,8 @@ export class VideoStudioGenerationService {
             topic: project.topic ?? '',
             niche: project.niche ?? 'finance',
             aspectRatio: project.aspectRatio ?? '9:16',
+            videoLength: project.videoLength,
+            onProgress,
           });
           break;
         case CreationMode.YoutubeRepurpose:
@@ -82,6 +104,8 @@ export class VideoStudioGenerationService {
             youtubeUrl: project.youtubeUrl ?? '',
             customScript: project.customScript,
             additionalPhotos: project.additionalPhotos ?? [],
+            videoLength: project.videoLength,
+            onProgress,
           });
           break;
         default:
@@ -102,6 +126,8 @@ export class VideoStudioGenerationService {
               status: VideoProjectStatus.Completed,
               progress: 100,
               outputVideoUrl: out.secureUrl ?? null,
+              outputVideoUrls: out.outputVideoUrls ?? [],
+              hasAudio: out.hasAudio ?? false,
               thumbnailUrl: out.secureUrl ?? null,
               durationSeconds: out.durationSeconds,
             },

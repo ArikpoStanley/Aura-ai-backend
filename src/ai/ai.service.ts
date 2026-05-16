@@ -1,189 +1,181 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AnthropicService } from './services/anthropic.service';
-import { CloudinaryService } from './services/cloudinary.service';
-import { ReplicateService } from './services/replicate.service';
+import { ReplicateUseCase } from './constants/replicate-use-case';
 import { GenerateCharacterDto } from './dto/generate-character.dto';
 import { GenerateImageDto } from './dto/generate-image.dto';
 import { GeneratePromptDto } from './dto/generate-prompt.dto';
 import { RemixVideoDto } from './dto/remix-video.dto';
+import { OpenAiService } from './services/openai.service';
+import { CloudinaryService } from './services/cloudinary.service';
+import {
+  ReplicateModelRouterService,
+  ReplicateRunPlan,
+} from './services/replicate-model-router.service';
+import { ReplicateService } from './services/replicate.service';
+import {
+  applyEnglishImagePrompt,
+  isEnglishLanguage,
+} from './constants/generation-language';
+import type { VideoLengthTier } from './constants/replicate-use-case';
 
 @Injectable()
 export class AiService {
-  private readonly defaultImageModel: string;
-  private readonly defaultVideoModel: string;
-
   constructor(
     private readonly config: ConfigService,
-    private readonly anthropicService: AnthropicService,
+    private readonly openAiService: OpenAiService,
     private readonly replicateService: ReplicateService,
     private readonly cloudinaryService: CloudinaryService,
-  ) {
-    this.defaultImageModel = this.config.get<string>(
-      'REPLICATE_IMAGE_MODEL',
-      'black-forest-labs/flux-schnell',
-    );
-    this.defaultVideoModel = this.config.get<string>(
-      'REPLICATE_VIDEO_MODEL',
-      'kwaivgi/kling-v1.6-standard',
-    );
-  }
+    private readonly modelRouter: ReplicateModelRouterService,
+  ) {}
 
   async generatePrompt(dto: GeneratePromptDto) {
-    const prompt = await this.anthropicService.generateVideoPrompt(dto);
+    const prompt = await this.openAiService.generateVideoPrompt(dto);
     return { prompt };
   }
 
   async generateImage(userId: string, dto: GenerateImageDto) {
-    const prompt = [
+    const rawPrompt = [
       dto.prompt,
       dto.style ? `style: ${dto.style}` : null,
       dto.aspectRatio ? `aspect ratio: ${dto.aspectRatio}` : null,
     ]
       .filter(Boolean)
       .join(', ');
+    const prompt = isEnglishLanguage(
+      this.config.get<string>('GENERATION_DEFAULT_LANGUAGE'),
+    )
+      ? applyEnglishImagePrompt(rawPrompt)
+      : rawPrompt;
 
-    const input: Record<string, unknown> = { prompt };
-    if (dto.negativePrompt) {
-      input.negative_prompt = dto.negativePrompt;
-    }
-
-    const prediction = await this.replicateService.runModel({
-      model: this.defaultImageModel,
-      input,
-    });
-
-    const firstOutputUrl = prediction.outputUrls[0];
-    if (!firstOutputUrl) {
-      return {
-        predictionId: prediction.predictionId,
-        cloudinary: null,
-        outputs: [],
-      };
-    }
-
-    const uploaded = await this.cloudinaryService.uploadFromUrl({
-      sourceUrl: firstOutputUrl,
-      folder: 'auravid/generated-images',
-      publicIdPrefix: `user-${userId}`,
-      resourceType: 'image',
-    });
-
-    return {
-      predictionId: prediction.predictionId,
-      outputs: prediction.outputUrls,
-      cloudinary: {
-        publicId: uploaded.public_id,
-        secureUrl: uploaded.secure_url,
-        width: uploaded.width,
-        height: uploaded.height,
+    const plan = this.modelRouter.buildImagePlan(
+      ReplicateUseCase.ImageGenerate,
+      prompt,
+      {
+        aspectRatio: dto.aspectRatio,
       },
-    };
+    );
+    if (dto.negativePrompt) {
+      plan.input.negative_prompt = dto.negativePrompt;
+    }
+
+    return this.runImagePlan(userId, plan, 'auravid/generated-images');
   }
 
   async generateCharacter(userId: string, dto: GenerateCharacterDto) {
     const characterPrompt =
-      await this.anthropicService.generateCharacterPrompt(dto);
-    const image = await this.generateImage(userId, {
-      prompt: characterPrompt,
-      style: dto.style,
-    });
+      await this.openAiService.generateCharacterPrompt(dto);
+    const plan = this.modelRouter.buildImagePlan(
+      ReplicateUseCase.CharacterGenerate,
+      characterPrompt,
+      { aspectRatio: '1:1' },
+    );
+    const image = await this.runImagePlan(
+      userId,
+      plan,
+      'auravid/generated-characters',
+    );
     return {
       prompt: characterPrompt,
       ...image,
+      model: plan.model,
     };
   }
 
   async remixVideo(userId: string, dto: RemixVideoDto) {
-    const remixPrompt = await this.anthropicService.generateVideoPrompt({
+    const remixPrompt = await this.openAiService.generateVideoPrompt({
       idea: `Remix this source video: ${dto.sourceVideoUrl}. Instruction: ${dto.instruction}`,
       style: 'video remix',
       tone: 'creative but faithful to source intent',
     });
 
-    const model = dto.model ?? this.defaultVideoModel;
-    const input: Record<string, unknown> = {
-      prompt: remixPrompt,
-      video: dto.sourceVideoUrl,
-      ...dto.inputOverrides,
-    };
+    const plans = dto.model
+      ? [
+          {
+            model: dto.model,
+            input: {
+              prompt: remixPrompt,
+              video: dto.sourceVideoUrl,
+              ...dto.inputOverrides,
+            },
+            timeoutMs: 300_000,
+          } satisfies ReplicateRunPlan,
+        ]
+      : this.modelRouter.buildRemixPlan(remixPrompt, {
+          sourceVideoUrl: dto.sourceVideoUrl,
+        });
 
-    const prediction = await this.replicateService.runModel({
-      model,
-      input,
-      timeoutMs: 240_000,
-    });
-
-    const firstOutputUrl = prediction.outputUrls[0];
-    if (!firstOutputUrl) {
-      return {
-        predictionId: prediction.predictionId,
-        model,
-        prompt: remixPrompt,
-        cloudinary: null,
-        outputs: [],
-      };
-    }
-
-    const uploaded = await this.cloudinaryService.uploadFromUrl({
-      sourceUrl: firstOutputUrl,
-      folder: 'auravid/generated-videos',
-      publicIdPrefix: `user-${userId}`,
-      resourceType: 'video',
-    });
+    const result = await this.runVideoPlansUntilSuccess(
+      userId,
+      plans,
+      'auravid/generated-videos',
+    );
 
     return {
-      predictionId: prediction.predictionId,
-      model,
+      predictionId: result.predictionId,
+      model: result.model,
       prompt: remixPrompt,
-      outputs: prediction.outputUrls,
-      cloudinary: {
-        publicId: uploaded.public_id,
-        secureUrl: uploaded.secure_url,
-        duration: uploaded.duration,
-        format: uploaded.format,
-      },
+      outputs: result.outputUrls,
+      cloudinary: result.cloudinary,
     };
   }
 
-  /**
-   * Video creation modes → `REPLICATE_VIDEO_MODEL` (text / faceless / repurpose).
-   * Photos+script → `REPLICATE_IMAGE_MODEL` (keyframe / thumbnail still).
-   */
-
   async studioTextToVideo(
     userId: string,
-    args: { prompt: string; voiceStyle: string; visualStyle: string },
-  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
-    const enriched = await this.anthropicService.generateVideoPrompt({
+    args: {
+      prompt: string;
+      voiceStyle: string;
+      visualStyle: string;
+      videoLength?: VideoLengthTier;
+      onProgress?: (progress: number) => void | Promise<void>;
+    },
+  ) {
+    const enriched = await this.openAiService.generateVideoPrompt({
       idea: args.prompt,
       tone: args.voiceStyle.replaceAll('_', ' '),
       style: args.visualStyle.replaceAll('_', ' '),
       targetAudience: 'general',
     });
-    return this.runVideoModelAndUpload(
-      userId,
-      enriched,
-      'auravid/creation/text-to-video',
-    );
+    return this.runStudioSegmentedVideo(userId, {
+      basePrompt: enriched,
+      videoLength: args.videoLength,
+      folder: 'auravid/creation/text-to-video',
+      onProgress: args.onProgress,
+      buildPlan: (scenePrompt) =>
+        this.modelRouter.buildTextToVideoPlan(scenePrompt, {
+          videoLength: args.videoLength,
+          aspectRatio: '16:9',
+        }),
+    });
   }
 
   async studioFacelessVideo(
     userId: string,
-    args: { topic: string; niche: string; aspectRatio: string },
-  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+    args: {
+      topic: string;
+      niche: string;
+      aspectRatio: string;
+      videoLength?: VideoLengthTier;
+      onProgress?: (progress: number) => void | Promise<void>;
+    },
+  ) {
     const idea = `Faceless ${args.niche} video about: ${args.topic}. Target framing: ${args.aspectRatio}.`;
-    const enriched = await this.anthropicService.generateVideoPrompt({
+    const enriched = await this.openAiService.generateVideoPrompt({
       idea,
       tone: 'clear and engaging',
       style: 'faceless social video',
       targetAudience: args.niche,
     });
-    return this.runVideoModelAndUpload(
-      userId,
-      enriched,
-      'auravid/creation/faceless-video',
-    );
+    return this.runStudioSegmentedVideo(userId, {
+      basePrompt: enriched,
+      videoLength: args.videoLength,
+      folder: 'auravid/creation/faceless-video',
+      onProgress: args.onProgress,
+      buildPlan: (scenePrompt) =>
+        this.modelRouter.buildFacelessVideoPlan(scenePrompt, {
+          aspectRatio: args.aspectRatio,
+          videoLength: args.videoLength,
+        }),
+    });
   }
 
   async studioYoutubeRepurpose(
@@ -192,127 +184,295 @@ export class AiService {
       youtubeUrl: string;
       customScript?: string;
       additionalPhotos: string[];
+      videoLength?: VideoLengthTier;
+      onProgress?: (progress: number) => void | Promise<void>;
     },
-  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
+  ) {
     const idea = [
       'Repurpose this into a fresh short-form video.',
       `Source: ${args.youtubeUrl}`,
       args.customScript ? `Director notes: ${args.customScript}` : null,
-      args.additionalPhotos.length
-        ? `Reference image URLs: ${args.additionalPhotos.join(' | ')}`
-        : null,
     ]
       .filter(Boolean)
       .join('\n');
 
-    const enriched = await this.anthropicService.generateVideoPrompt({
+    const enriched = await this.openAiService.generateVideoPrompt({
       idea,
       tone: 'punchy',
       style: 'repurposed viral short',
       targetAudience: 'general',
     });
 
-    try {
-      return await this.runVideoModelAndUpload(
-        userId,
-        enriched,
-        'auravid/creation/youtube-repurpose',
-        { video: args.youtubeUrl },
-      );
-    } catch (firstError) {
-      const fallbackPrompt = `${enriched}\n\n(Context: source was ${args.youtubeUrl} — generate a new standalone short that captures the same intent.)`;
-      try {
-        return await this.runVideoModelAndUpload(
-          userId,
-          fallbackPrompt,
-          'auravid/creation/youtube-repurpose',
-        );
-      } catch {
-        throw firstError instanceof BadGatewayException
-          ? firstError
-          : new BadGatewayException(
-              firstError instanceof Error
-                ? firstError.message
-                : 'Video generation failed',
-            );
-      }
+    if (args.videoLength === 'long') {
+      return this.runStudioSegmentedVideo(userId, {
+        basePrompt: enriched,
+        videoLength: args.videoLength,
+        folder: 'auravid/creation/youtube-repurpose',
+        onProgress: args.onProgress,
+        buildPlan: (scenePrompt) =>
+          this.modelRouter.buildTextToVideoPlan(scenePrompt, {
+            videoLength: args.videoLength,
+            aspectRatio: '9:16',
+          }),
+      });
     }
+
+    const startImage = args.additionalPhotos[0];
+    const plans = this.modelRouter.buildYoutubeRepurposePlans(enriched, {
+      youtubeUrl: args.youtubeUrl,
+      startImageUrl: startImage,
+      videoLength: args.videoLength,
+    });
+
+    const result = await this.runVideoPlansUntilSuccess(
+      userId,
+      plans,
+      'auravid/creation/youtube-repurpose',
+    );
+    return {
+      secureUrl: result.cloudinary?.secureUrl ?? null,
+      outputVideoUrls: result.cloudinary?.secureUrl
+        ? [result.cloudinary.secureUrl]
+        : [],
+      durationSeconds: result.cloudinary?.duration,
+      model: result.model,
+      hasAudio: this.modelRouter.wantsVideoAudio(),
+      segmentCount: 1,
+    };
   }
 
-  async studioPhotosScriptImage(
+  async studioPhotosScript(
     userId: string,
-    args: { photos: string[]; script: string },
-  ): Promise<{ secureUrl: string | null }> {
+    args: { photos: string[]; script: string; videoLength?: VideoLengthTier },
+  ): Promise<{
+    secureUrl: string | null;
+    thumbnailUrl: string | null;
+    durationSeconds?: number;
+    outputVideoUrls?: string[];
+    hasAudio?: boolean;
+    isVideo: boolean;
+  }> {
     const idea = [
       'Create one hero still / keyframe image for a photo-driven narrated video.',
       `Script / narration direction: ${args.script}`,
-      `Reference photo URLs (match mood and subject continuity): ${args.photos.join(' | ')}`,
+      `Reference photo URLs: ${args.photos.join(' | ')}`,
     ].join('\n');
 
-    const enriched = await this.anthropicService.generateVideoPrompt({
+    const enriched = await this.openAiService.generateVideoPrompt({
       idea,
       tone: 'warm',
       style: 'high-end thumbnail still, sharp subject, readable at small size',
       targetAudience: 'social feed viewers',
     });
 
-    const input: Record<string, unknown> = { prompt: enriched };
-    const useImageInput =
-      this.config.get<string>('REPLICATE_PHOTOS_SCRIPT_IMAGE_INPUT', 'true') !==
-      'false';
-    const firstPhoto = args.photos[0];
-    if (useImageInput && firstPhoto) {
-      input.image = firstPhoto;
+    const imagePlan = this.modelRouter.buildImagePlan(
+      ReplicateUseCase.PhotosScriptImage,
+      enriched,
+      { imageUrl: args.photos[0] },
+    );
+
+    const imageResult = await this.runImagePlan(
+      userId,
+      imagePlan,
+      'auravid/creation/photos-script',
+    );
+    const keyframeUrl = imageResult.cloudinary?.secureUrl ?? null;
+
+    const animate =
+      this.config.get<string>('REPLICATE_PHOTOS_SCRIPT_ANIMATE_VIDEO', 'true') ===
+      'true';
+
+    if (!animate || !keyframeUrl) {
+      return {
+        secureUrl: keyframeUrl,
+        thumbnailUrl: keyframeUrl,
+        isVideo: false,
+      };
     }
 
-    const prediction = await this.replicateService.runModel({
-      model: this.defaultImageModel,
-      input,
-      timeoutMs: 180_000,
+    const videoPrompt = await this.openAiService.generateVideoPrompt({
+      idea: `Animate this photo slideshow video. Narration: ${args.script}`,
+      style: 'smooth ken burns motion, social video',
+      tone: 'engaging',
+      targetAudience: 'general',
     });
 
-    const firstOutputUrl = prediction.outputUrls[0];
-    if (!firstOutputUrl) {
-      return { secureUrl: null };
+    try {
+      const video = await this.runStudioSegmentedVideo(userId, {
+        basePrompt: videoPrompt,
+        videoLength: args.videoLength,
+        folder: 'auravid/creation/photos-script',
+        buildPlan: (scenePrompt) =>
+          this.modelRouter.buildImageToVideoPlan(scenePrompt, keyframeUrl, {
+            videoLength: args.videoLength,
+            aspectRatio: '9:16',
+            useCase: ReplicateUseCase.PhotosScriptVideo,
+          }),
+      });
+      return {
+        secureUrl: video.secureUrl,
+        thumbnailUrl: keyframeUrl,
+        durationSeconds: video.durationSeconds,
+        outputVideoUrls: video.outputVideoUrls,
+        hasAudio: video.hasAudio,
+        isVideo: true,
+      };
+    } catch {
+      return {
+        secureUrl: keyframeUrl,
+        thumbnailUrl: keyframeUrl,
+        isVideo: false,
+      };
     }
-
-    const uploaded = await this.cloudinaryService.uploadFromUrl({
-      sourceUrl: firstOutputUrl,
-      folder: 'auravid/creation/photos-script',
-      publicIdPrefix: `user-${userId}`,
-      resourceType: 'image',
-    });
-
-    return { secureUrl: uploaded.secure_url || null };
   }
 
-  private async runVideoModelAndUpload(
+  async runStudioSegmentedVideo(
     userId: string,
-    prompt: string,
-    folder: string,
-    extraInput: Record<string, unknown> = {},
-  ): Promise<{ secureUrl: string | null; durationSeconds?: number }> {
-    const prediction = await this.replicateService.runModel({
-      model: this.defaultVideoModel,
-      input: { prompt, ...extraInput },
-      timeoutMs: 300_000,
-    });
+    args: {
+      basePrompt: string;
+      videoLength?: VideoLengthTier;
+      folder: string;
+      buildPlan: (scenePrompt: string, durationSeconds: number) => ReplicateRunPlan;
+      onProgress?: (progress: number) => void | Promise<void>;
+    },
+  ): Promise<{
+    secureUrl: string | null;
+    outputVideoUrls: string[];
+    durationSeconds?: number;
+    model: string;
+    hasAudio: boolean;
+    segmentCount: number;
+  }> {
+    const segmentConfig = this.modelRouter.getVideoSegmentConfig(
+      args.videoLength,
+    );
+    const scenes =
+      segmentConfig.segmentCount > 1
+        ? await this.openAiService.generateVideoScenePrompts({
+            idea: args.basePrompt,
+            segmentCount: segmentConfig.segmentCount,
+            secondsPerSegment: segmentConfig.secondsPerSegment,
+          })
+        : [args.basePrompt];
 
+    const outputVideoUrls: string[] = [];
+    let totalDuration = 0;
+    let model = '';
+
+    for (let i = 0; i < scenes.length; i++) {
+      const plan = args.buildPlan(
+        scenes[i],
+        segmentConfig.secondsPerSegment,
+      );
+      model = plan.model;
+      const result = await this.runVideoPlansUntilSuccess(
+        userId,
+        [plan],
+        args.folder,
+      );
+      const url = result.cloudinary?.secureUrl;
+      if (url) {
+        outputVideoUrls.push(url);
+      }
+      totalDuration +=
+        result.cloudinary?.duration ?? segmentConfig.secondsPerSegment;
+
+      if (args.onProgress) {
+        const pct = Math.round(20 + (70 * (i + 1)) / scenes.length);
+        await args.onProgress(pct);
+      }
+    }
+
+    if (outputVideoUrls.length === 0) {
+      throw new BadGatewayException('Video generation produced no outputs');
+    }
+
+    return {
+      secureUrl: outputVideoUrls[0],
+      outputVideoUrls,
+      durationSeconds: totalDuration,
+      model,
+      hasAudio: this.modelRouter.wantsVideoAudio(),
+      segmentCount: scenes.length,
+    };
+  }
+
+  private async runVideoPlansUntilSuccess(
+    userId: string,
+    plans: ReplicateRunPlan[],
+    folder: string,
+  ) {
+    let lastError: unknown;
+    for (const plan of plans) {
+      try {
+        const prediction = await this.replicateService.runModel(plan);
+        const firstOutputUrl = prediction.outputUrls[0];
+        if (!firstOutputUrl) {
+          continue;
+        }
+        const uploaded = await this.cloudinaryService.uploadFromUrl({
+          sourceUrl: firstOutputUrl,
+          folder,
+          publicIdPrefix: `user-${userId}`,
+          resourceType: 'video',
+        });
+        return {
+          predictionId: prediction.predictionId,
+          model: plan.model,
+          outputUrls: prediction.outputUrls,
+          cloudinary: {
+            publicId: uploaded.public_id,
+            secureUrl: uploaded.secure_url,
+            duration: uploaded.duration,
+            format: uploaded.format,
+          },
+        };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof BadGatewayException
+      ? lastError
+      : new BadGatewayException(
+          lastError instanceof Error
+            ? lastError.message
+            : 'Video generation failed for all configured models',
+        );
+  }
+
+  private async runImagePlan(
+    userId: string,
+    plan: ReplicateRunPlan,
+    folder: string,
+  ) {
+    const prediction = await this.replicateService.runModel(plan);
     const firstOutputUrl = prediction.outputUrls[0];
     if (!firstOutputUrl) {
-      return { secureUrl: null };
+      return {
+        predictionId: prediction.predictionId,
+        model: plan.model,
+        cloudinary: null,
+        outputs: [],
+      };
     }
 
     const uploaded = await this.cloudinaryService.uploadFromUrl({
       sourceUrl: firstOutputUrl,
       folder,
       publicIdPrefix: `user-${userId}`,
-      resourceType: 'video',
+      resourceType: 'image',
     });
 
     return {
-      secureUrl: uploaded.secure_url || null,
-      durationSeconds: uploaded.duration,
+      predictionId: prediction.predictionId,
+      model: plan.model,
+      outputs: prediction.outputUrls,
+      cloudinary: {
+        publicId: uploaded.public_id,
+        secureUrl: uploaded.secure_url,
+        width: uploaded.width,
+        height: uploaded.height,
+      },
     };
   }
 }
