@@ -25,42 +25,55 @@ Copy `.env.example` to `.env` and fill in values.
 
 **Required**
 
-| Variable | Purpose |
-|----------|---------|
+
+| Variable      | Purpose                   |
+| ------------- | ------------------------- |
 | `MONGODB_URI` | MongoDB connection string |
-| `JWT_SECRET` | Signs access tokens |
+| `JWT_SECRET`  | Signs access tokens       |
+
 
 **Auth / server**
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `PORT` | `3000` | HTTP port |
-| `CORS_ORIGIN` | — | Allowed browser origin(s) for the frontend |
-| `JWT_EXPIRES_IN` | `7d` | Access token lifetime |
-| `OTP_EXPIRES_MINUTES` | `10` | OTP validity |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enable Google OAuth (omit both to disable) |
-| `GOOGLE_CALLBACK_URL` | — | Backend callback, e.g. `http://localhost:3000/auth/google/callback` |
-| `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` | — | If set, OAuth redirects here with tokens in the URL hash (see Auth) |
+
+| Variable                                    | Default | Purpose                                                             |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------- |
+| `PORT`                                      | `3000`  | HTTP port                                                           |
+| `CORS_ORIGIN`                               | —       | Allowed browser origin(s) for the frontend                          |
+| `JWT_EXPIRES_IN`                            | `7d`    | Access token lifetime                                               |
+| `OTP_EXPIRES_MINUTES`                       | `10`    | OTP validity                                                        |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | —       | Enable Google OAuth (omit both to disable)                          |
+| `GOOGLE_CALLBACK_URL`                       | —       | Backend callback, e.g. `http://localhost:3000/auth/google/callback` |
+| `GOOGLE_AUTH_SUCCESS_REDIRECT_URL`          | —       | If set, OAuth redirects here with tokens in the URL hash (see Auth) |
+
 
 **AI / media (required for video generation)**
 
-| Variable | Purpose |
-|----------|---------|
-| `OPENAI_API_KEY` | Prompt engineering (ChatGPT) |
-| `OPENAI_MODEL` | e.g. `gpt-4o-mini` |
-| `REPLICATE_API_TOKEN` | Video/image generation |
-| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Uploaded output storage |
+
+| Variable                                                                 | Purpose                      |
+| ------------------------------------------------------------------------ | ---------------------------- |
+| `OPENAI_API_KEY`                                                         | Prompt engineering (ChatGPT) |
+| `OPENAI_MODEL`                                                           | e.g. `gpt-4o-mini`           |
+| `REPLICATE_API_TOKEN`                                                    | Video/image generation       |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Uploaded output storage      |
+
 
 **Generation behavior (optional)**
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `GENERATION_DEFAULT_LANGUAGE` | `en` | English (US) for prompts, dialogue, and on-screen text |
-| `REPLICATE_VIDEO_GENERATE_AUDIO` | `true` | Use Kling with native audio (Wan models are silent) |
-| `REPLICATE_USE_PREMIUM` | `false` | Prefer `*_PREMIUM` Replicate model env vars |
-| `REPLICATE_LONG_VIDEO_TARGET_SECONDS` | `180` | Target duration when `videoLength` is `long` |
-| `REPLICATE_SEGMENT_MAX_SECONDS` | `15` | Seconds per segment (Replicate clip cap) |
-| `REPLICATE_LONG_VIDEO_MAX_SEGMENTS` | `12` | Max clips for one `long` project |
+
+| Variable                              | Default | Purpose                                                |
+| ------------------------------------- | ------- | ------------------------------------------------------ |
+| `GENERATION_DEFAULT_LANGUAGE`         | `en`    | English (US) for prompts, dialogue, and on-screen text |
+| `REPLICATE_VIDEO_GENERATE_AUDIO`      | `true`  | Use Kling with native audio (Wan models are silent). Alias: `REPLICATE_KLING_GENERATE_AUDIO` |
+| `REPLICATE_USE_PREMIUM`               | `false` | Prefer `*_PREMIUM` Replicate model env vars            |
+| `REPLICATE_MAX_VIDEO_SECONDS`         | `60`    | Hard cap on total generated duration (all tiers)       |
+| `REPLICATE_SHORT_VIDEO_SECONDS`       | `20`    | Target when `videoLength` is `short`                   |
+| `REPLICATE_MEDIUM_VIDEO_SECONDS`      | `40`    | Target when `videoLength` is `medium`                  |
+| `REPLICATE_LONG_VIDEO_TARGET_SECONDS` | `60`    | Target when `videoLength` is `long`                    |
+| `REPLICATE_SEGMENT_MAX_SECONDS`       | `15`    | Seconds per segment (Replicate clip cap)               |
+| `REPLICATE_LONG_VIDEO_MAX_SEGMENTS`   | `4`     | Max clips for one `long` project (4 × 15s = 1 min)     |
+| `REPLICATE_VIDEO_MAX_PARALLEL`        | `3`     | Concurrent Replicate jobs for `long` multi-segment videos (max 6) |
+| `REPLICATE_POLL_INTERVAL_MS`          | `1000`  | How often to poll Replicate while a clip is generating |
+
 
 See `.env.example` for full Replicate model routing variables.
 
@@ -85,22 +98,24 @@ Use this section when wiring the React (or other) client to the backend.
 
 1. **Email/password** — `POST /auth/login` or complete signup; store `access_token` (memory, secure cookie, or `localStorage` per your security model).
 2. **Google** — Redirect the browser to `GET /auth/google`. After success:
-   - If `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` is set: user lands on your page with  
-     `#access_token=<jwt>&user=<url-encoded-json>`  
-     Parse the hash on the success route (e.g. `/auth/google/success`).
-   - If not set: callback returns JSON `{ access_token, user }` (API-only / Postman).
-3. Send `Authorization: Bearer <access_token>` on all protected routes (`/video-studio/*`, `/studio/*`, `/ai/*`).
+  - If `GOOGLE_AUTH_SUCCESS_REDIRECT_URL` is set: user lands on your page with  
+   `#access_token=<jwt>&user=<url-encoded-json>`  
+   Parse the hash on the success route (e.g. `/auth/google/success`).
+  - If not set: callback returns JSON `{ access_token, user }` (API-only / Postman).
+3. Send `Authorization: Bearer <access_token>` on all protected routes (`/video-studio/`*, `/studio/*`, `/ai/*`).
 
 ### Async video projects (critical)
 
 Video Studio **does not** return finished media on `POST`. Generation runs in the background (Replicate + Cloudinary).
 
-| Step | Action |
-|------|--------|
-| 1 | `POST /video-studio/projects/...` → `status: "in_progress"`, `progress: 5`, `outputVideoUrl: null` |
-| 2 | Poll `GET /video-studio/projects?status=in_progress` or `GET /video-studio/dashboard` every **2–5s** |
-| 3 | When `status === "completed"`, read `outputVideoUrl`, `outputVideoUrls`, `hasAudio`, `durationSeconds` |
-| 4 | On `status === "failed"`, show retry; `progress` resets to `0` |
+
+| Step | Action                                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------ |
+| 1    | `POST /video-studio/projects/...` → `status: "in_progress"`, `progress: 5`, `outputVideoUrl: null`     |
+| 2    | Poll `GET /video-studio/projects?status=in_progress` or `GET /video-studio/dashboard` every **2–5s**   |
+| 3    | When `status === "completed"`, read `outputVideoUrl`, `outputVideoUrls`, `hasAudio`, `durationSeconds` |
+| 4    | On `status === "failed"`, show retry; `progress` resets to `0`                                         |
+
 
 Do **not** treat `null` URLs on create as an error — that is expected until polling completes.
 
@@ -116,7 +131,7 @@ All project endpoints return the same **project card** shape:
   "status": "completed",
   "progress": 100,
   "videoLength": "long",
-  "durationSeconds": 180,
+  "durationSeconds": 60,
   "thumbnailUrl": "https://res.cloudinary.com/.../thumb.mp4",
   "outputVideoUrl": "https://res.cloudinary.com/.../segment-1.mp4",
   "outputVideoUrls": [
@@ -129,27 +144,31 @@ All project endpoints return the same **project card** shape:
 }
 ```
 
-| Field | Frontend usage |
-|-------|----------------|
-| `status` | `in_progress` \| `completed` \| `failed` |
-| `progress` | 0–100; updates during multi-segment `long` jobs (~20→90 per segment) |
-| `outputVideoUrl` | Primary playback URL (first segment when `long`) |
-| `outputVideoUrls` | **All segments** in order — use for playlist UI or client-side stitching |
-| `hasAudio` | `true` when Kling audio was requested (`REPLICATE_VIDEO_GENERATE_AUDIO`); Wan-only outputs are `false` |
-| `durationSeconds` | Sum of segment durations (approximate) |
-| `videoLength` | User-selected tier: `short` \| `medium` \| `long` (see below) |
+
+| Field             | Frontend usage                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------ |
+| `status`          | `in_progress` | `completed` | `failed`                                                                 |
+| `progress`        | 0–100; updates during multi-segment `long` jobs (~20→90 per segment)                                   |
+| `outputVideoUrl`  | Primary playback URL (first segment when `long`)                                                       |
+| `outputVideoUrls` | **All segments** in order — use for playlist UI or client-side stitching                               |
+| `hasAudio`        | `true` when Kling audio was requested (`REPLICATE_VIDEO_GENERATE_AUDIO`); Wan-only outputs are `false` |
+| `durationSeconds` | Sum of segment durations (approximate)                                                                 |
+| `videoLength`     | User-selected tier: `short` | `medium` | `long` (see below)                                            |
+
 
 ### `videoLength` — UI labels vs backend behavior
 
 Dropdown labels in `GET /video-studio/options` are marketing-friendly. **Actual generation:**
 
-| `videoLength` | Backend behavior |
-|---------------|------------------|
-| `short` | Single clip, ~**5s** |
-| `medium` | Single clip, ~**10s** |
-| `long` | Up to **12** clips × **15s** each (default total ~**3 min** / 180s). Multiple URLs in `outputVideoUrls`. |
 
-Recommend showing estimated time/cost in the UI for `long` (many sequential Replicate jobs). There is **no** single merged MP4 from the API yet — play segments in sequence or stitch on the client.
+| `videoLength` | Backend behavior                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `short`       | **20s** total (2 clips × ~10s when using Kling’s 15s cap)                                                  |
+| `medium`      | **40s** total (~3 clips)                                                                                   |
+| `long`        | **60s** / 1 min total (4 clips × 15s). Multiple URLs in `outputVideoUrls`.                                 |
+
+
+Recommend showing estimated time/cost in the UI for `long` (many Replicate jobs; segments run in parallel up to `REPLICATE_VIDEO_MAX_PARALLEL`). There is **no** single merged MP4 from the API yet — play segments in sequence or stitch on the client.
 
 ### Language
 
@@ -159,12 +178,14 @@ All generated prompts and video audio/text default to **English (US)** (`GENERAT
 
 Prefer **mode-specific** routes (stricter validation) over the generic `POST /video-studio/projects`:
 
-| Mode | Endpoint |
-|------|----------|
-| Text to video | `POST /video-studio/projects/text-to-video` |
-| Photos + script | `POST /video-studio/projects/photos-script` |
+
+| Mode              | Endpoint                                        |
+| ----------------- | ----------------------------------------------- |
+| Text to video     | `POST /video-studio/projects/text-to-video`     |
+| Photos + script   | `POST /video-studio/projects/photos-script`     |
 | YouTube repurpose | `POST /video-studio/projects/youtube-repurpose` |
-| Faceless video | `POST /video-studio/projects/faceless-video` |
+| Faceless video    | `POST /video-studio/projects/faceless-video`    |
+
 
 ### Photos + script edge case
 
@@ -179,9 +200,11 @@ Set `CORS_ORIGIN` to your frontend origin (e.g. `http://localhost:5173`). Produc
 ## Auth Endpoints (`/auth`)
 
 ### `POST /auth/login`
+
 Validates email/password and returns an authenticated user session payload.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com",
@@ -190,6 +213,7 @@ Validates email/password and returns an authenticated user session payload.
 ```
 
 **Response**
+
 ```json
 {
   "access_token": "<jwt>",
@@ -205,9 +229,11 @@ Validates email/password and returns an authenticated user session payload.
 ```
 
 ### `POST /auth/register`
+
 Registers a user directly (without OTP flow) and returns access token + user.
 
 **Request**
+
 ```json
 {
   "firstName": "Adaeze",
@@ -220,6 +246,7 @@ Registers a user directly (without OTP flow) and returns access token + user.
 ```
 
 **Response**
+
 ```json
 {
   "access_token": "<jwt>",
@@ -235,9 +262,11 @@ Registers a user directly (without OTP flow) and returns access token + user.
 ```
 
 ### `POST /auth/signup/request-otp`
+
 Sends signup OTP to email for staged account creation.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com"
@@ -245,6 +274,7 @@ Sends signup OTP to email for staged account creation.
 ```
 
 **Response**
+
 ```json
 {
   "message": "OTP sent"
@@ -252,9 +282,11 @@ Sends signup OTP to email for staged account creation.
 ```
 
 ### `POST /auth/signup/resend-otp`
+
 Resends signup OTP to the same email.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com"
@@ -262,6 +294,7 @@ Resends signup OTP to the same email.
 ```
 
 **Response**
+
 ```json
 {
   "message": "OTP sent"
@@ -269,9 +302,11 @@ Resends signup OTP to the same email.
 ```
 
 ### `POST /auth/signup/verify-otp`
+
 Verifies signup OTP and returns a short-lived `setupToken`.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com",
@@ -280,6 +315,7 @@ Verifies signup OTP and returns a short-lived `setupToken`.
 ```
 
 **Response**
+
 ```json
 {
   "setupToken": "<jwt>"
@@ -287,6 +323,7 @@ Verifies signup OTP and returns a short-lived `setupToken`.
 ```
 
 ### Email verification aliases
+
 These routes currently reuse the signup OTP handlers and payload contracts:
 
 - `POST /auth/email-verification/request-otp`
@@ -294,9 +331,11 @@ These routes currently reuse the signup OTP handlers and payload contracts:
 - `POST /auth/email-verification/verify-otp`
 
 ### `POST /auth/signup/complete`
+
 Completes OTP signup using `setupToken` and profile/password data.
 
 **Request**
+
 ```json
 {
   "setupToken": "<jwt>",
@@ -309,6 +348,7 @@ Completes OTP signup using `setupToken` and profile/password data.
 ```
 
 **Response**
+
 ```json
 {
   "access_token": "<jwt>",
@@ -324,6 +364,7 @@ Completes OTP signup using `setupToken` and profile/password data.
 ```
 
 ### Password reset aliases
+
 All routes below map to the same reset flow handlers and payload contracts:
 
 - `POST /auth/forgot-password`
@@ -334,6 +375,7 @@ All routes below map to the same reset flow handlers and payload contracts:
 Sends reset OTP to an existing email.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com"
@@ -341,6 +383,7 @@ Sends reset OTP to an existing email.
 ```
 
 **Response**
+
 ```json
 {
   "message": "OTP sent"
@@ -348,12 +391,14 @@ Sends reset OTP to an existing email.
 ```
 
 ### OTP verify aliases
+
 - `POST /auth/reset-password/verify`
 - `POST /auth/forgot-password/verify`
 
 Validates reset OTP and returns `resetToken`.
 
 **Request**
+
 ```json
 {
   "email": "user@example.com",
@@ -362,6 +407,7 @@ Validates reset OTP and returns `resetToken`.
 ```
 
 **Response**
+
 ```json
 {
   "resetToken": "<jwt>"
@@ -369,12 +415,14 @@ Validates reset OTP and returns `resetToken`.
 ```
 
 ### Reset complete aliases
+
 - `POST /auth/reset-password/complete`
 - `POST /auth/forgot-password/complete`
 
 Sets a new password and returns signed-in response.
 
 **Request**
+
 ```json
 {
   "resetToken": "<jwt>",
@@ -384,6 +432,7 @@ Sets a new password and returns signed-in response.
 ```
 
 **Response**
+
 ```json
 {
   "access_token": "<jwt>",
@@ -399,6 +448,7 @@ Sets a new password and returns signed-in response.
 ```
 
 ### `GET /auth/google`
+
 Starts Google OAuth login redirect.
 
 **Request**  
@@ -408,6 +458,7 @@ No body.
 Redirect handled by Passport Google strategy.
 
 ### `GET /auth/google/callback`
+
 Completes Google OAuth (browser redirect from Google).
 
 **Request**  
@@ -439,12 +490,14 @@ Parse `window.location.hash` on the frontend success page.
 Protected with JWT. Projects are generated **asynchronously** — see [Frontend integration guide](#frontend-integration-guide).
 
 ### `GET /video-studio/options`
+
 Returns dropdown and creation-mode option data used by the creation screen.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "creationModes": [
@@ -455,9 +508,9 @@ No body.
   ],
   "dropdowns": {
     "videoLengths": [
-      { "id": "short", "label": "Short (15-60s)" },
-      { "id": "medium", "label": "Medium (1-3m)" },
-      { "id": "long", "label": "Long (3-10m)" }
+      { "id": "short", "label": "Short (20s)" },
+      { "id": "medium", "label": "Medium (40s)" },
+      { "id": "long", "label": "Long (1 min)" }
     ],
     "voiceStyles": [
       { "id": "professional_male", "label": "Professional male" },
@@ -488,9 +541,11 @@ No body.
 ```
 
 ### `POST /video-studio/projects`
+
 Generic create (all modes). Prefer the mode-specific routes below when possible.
 
 **Request (common fields)**
+
 ```json
 {
   "mode": "text_to_video",
@@ -529,6 +584,7 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
 ### `POST /video-studio/projects/text-to-video`
 
 **Request**
+
 ```json
 {
   "title": "optional",
@@ -542,6 +598,7 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
 ### `POST /video-studio/projects/photos-script`
 
 **Request**
+
 ```json
 {
   "title": "optional",
@@ -554,6 +611,7 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
 ### `POST /video-studio/projects/youtube-repurpose`
 
 **Request**
+
 ```json
 {
   "title": "optional",
@@ -567,6 +625,7 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
 ### `POST /video-studio/projects/faceless-video`
 
 **Request**
+
 ```json
 {
   "title": "optional",
@@ -578,9 +637,11 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
 ```
 
 ### `GET /video-studio/projects`
+
 Lists user projects, filterable by status.
 
 **Request (query params)**
+
 ```http
 /video-studio/projects?status=in_progress&limit=20
 ```
@@ -610,12 +671,14 @@ Lists user projects, filterable by status.
 **Query `status` values:** `in_progress`, `completed`, `failed`
 
 ### `GET /video-studio/dashboard`
+
 Returns dashboard cards, recent completed videos, and current in-progress item.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "stats": {
@@ -635,9 +698,11 @@ No body.
 Protected with JWT. Used for standalone tools and internal studio flows. Video studio projects call the same stack in the background.
 
 ### `POST /ai/prompts/generate`
+
 Expands an idea into a production-ready prompt (OpenAI). Output is English by default.
 
 **Request**
+
 ```json
 {
   "idea": "A 30 second ad for a coffee brand",
@@ -648,6 +713,7 @@ Expands an idea into a production-ready prompt (OpenAI). Output is English by de
 ```
 
 **Response**
+
 ```json
 {
   "prompt": "Cinematic close-up of espresso pouring..."
@@ -655,9 +721,11 @@ Expands an idea into a production-ready prompt (OpenAI). Output is English by de
 ```
 
 ### `POST /ai/images/generate`
+
 Generates an image via Replicate, uploads to Cloudinary.
 
 **Request**
+
 ```json
 {
   "prompt": "Minimal product shot of a smartwatch",
@@ -668,6 +736,7 @@ Generates an image via Replicate, uploads to Cloudinary.
 ```
 
 **Response**
+
 ```json
 {
   "predictionId": "...",
@@ -683,9 +752,11 @@ Generates an image via Replicate, uploads to Cloudinary.
 ```
 
 ### `POST /ai/characters/generate`
+
 Character portrait (OpenAI prompt + Flux).
 
 **Request**
+
 ```json
 {
   "name": "Maya",
@@ -696,9 +767,11 @@ Character portrait (OpenAI prompt + Flux).
 ```
 
 ### `POST /ai/videos/remix`
+
 Remix/transform a source video URL.
 
 **Request**
+
 ```json
 {
   "sourceVideoUrl": "https://cdn.example.com/source.mp4",
@@ -709,6 +782,7 @@ Remix/transform a source video URL.
 ```
 
 **Response**
+
 ```json
 {
   "predictionId": "...",
@@ -729,12 +803,14 @@ Remix/transform a source video URL.
 ## Studio Endpoints (`/studio`)
 
 ### `GET /studio/profile`
+
 Returns profile summary and credit usage shown on the profile page.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "id": "6813f3...",
@@ -748,14 +824,17 @@ No body.
 ```
 
 ### `GET /studio/history`
+
 Returns generation audit/history rows.
 
 **Request (query params)**
+
 ```http
 /studio/history?limit=30
 ```
 
 **Response**
+
 ```json
 [
   {
@@ -770,14 +849,17 @@ Returns generation audit/history rows.
 ```
 
 ### `GET /studio/templates`
+
 Returns template categories and template cards (supports category + search filtering).
 
 **Request (query params)**
+
 ```http
 /studio/templates?category=finance&search=crypto
 ```
 
 **Response**
+
 ```json
 {
   "categories": ["all", "explainer", "social_media", "corporate", "finance", "lifestyle"],
@@ -794,14 +876,17 @@ Returns template categories and template cards (supports category + search filte
 ```
 
 ### `GET /studio/assets`
+
 Returns media library assets (optional type filtering).
 
 **Request (query params)**
+
 ```http
 /studio/assets?type=image
 ```
 
 **Response**
+
 ```json
 [
   {
@@ -816,9 +901,11 @@ Returns media library assets (optional type filtering).
 ```
 
 ### `POST /studio/assets`
+
 Creates a media-asset record after upload is completed by your storage service.
 
 **Request**
+
 ```json
 {
   "name": "Company_Logo.png",
@@ -829,6 +916,7 @@ Creates a media-asset record after upload is completed by your storage service.
 ```
 
 **Response**
+
 ```json
 {
   "id": "6815cf...",
@@ -845,12 +933,14 @@ Creates a media-asset record after upload is completed by your storage service.
 ## Settings Endpoints (`/studio/settings`)
 
 ### `GET /studio/settings/general`
+
 Returns language, timezone, and theme preference.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "language": "English (US)",
@@ -860,9 +950,11 @@ No body.
 ```
 
 ### `PATCH /studio/settings/general`
+
 Updates language, timezone, and theme preference.
 
 **Request**
+
 ```json
 {
   "language": "English (US)",
@@ -872,6 +964,7 @@ Updates language, timezone, and theme preference.
 ```
 
 **Response**
+
 ```json
 {
   "language": "English (US)",
@@ -881,12 +974,14 @@ Updates language, timezone, and theme preference.
 ```
 
 ### `GET /studio/settings/notifications`
+
 Returns user notification toggle states.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "videoGenerationComplete": true,
@@ -896,9 +991,11 @@ No body.
 ```
 
 ### `PATCH /studio/settings/notifications`
+
 Updates notification toggle states.
 
 **Request**
+
 ```json
 {
   "videoGenerationComplete": true,
@@ -908,6 +1005,7 @@ Updates notification toggle states.
 ```
 
 **Response**
+
 ```json
 {
   "videoGenerationComplete": true,
@@ -917,12 +1015,14 @@ Updates notification toggle states.
 ```
 
 ### `GET /studio/settings/video-defaults`
+
 Returns default voice, caption style, and dropdown options.
 
 **Request**  
 No body.
 
 **Response**
+
 ```json
 {
   "defaultVoice": "professional_male",
@@ -941,9 +1041,11 @@ No body.
 ```
 
 ### `PATCH /studio/settings/video-defaults`
+
 Updates default voice and captions style.
 
 **Request**
+
 ```json
 {
   "defaultVoice": "professional_male",
@@ -952,6 +1054,7 @@ Updates default voice and captions style.
 ```
 
 **Response**
+
 ```json
 {
   "defaultVoice": "professional_male",
@@ -978,3 +1081,4 @@ Updates default voice and captions style.
 - Video generation requires outbound access to `api.replicate.com`, OpenAI, and Cloudinary from the server.
 - Rate limiting: global throttler (`THROTTLE_TTL_SECONDS`, `THROTTLE_LIMIT`).
 - Production example base URL (if deployed): `https://aura-ai-backend-eight.vercel.app` — use the same route paths as local.
+

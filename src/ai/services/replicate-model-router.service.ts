@@ -90,37 +90,75 @@ export class ReplicateModelRouterService {
 
   /** Wan models are silent; use Kling when audio is requested. */
   wantsVideoAudio(): boolean {
-    return (
-      this.config.get<string>('REPLICATE_VIDEO_GENERATE_AUDIO', 'true') ===
-      'true'
+    const raw =
+      this.config.get<string>('REPLICATE_VIDEO_GENERATE_AUDIO') ??
+      this.config.get<string>('REPLICATE_KLING_GENERATE_AUDIO') ??
+      'true';
+    return raw === 'true';
+  }
+
+  /** Max concurrent Replicate video jobs (long multi-segment renders). */
+  getVideoMaxParallel(): number {
+    const n = Number(
+      this.config.get<string>('REPLICATE_VIDEO_MAX_PARALLEL', '3'),
     );
+    return Number.isFinite(n) && n > 0 ? Math.min(6, Math.floor(n)) : 3;
+  }
+
+  /** Hard ceiling for total generated video duration (all segments combined). */
+  getMaxVideoSeconds(): number {
+    const n = Number(
+      this.config.get<string>('REPLICATE_MAX_VIDEO_SECONDS', '60'),
+    );
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60;
+  }
+
+  /** Target total duration per videoLength tier (capped by REPLICATE_MAX_VIDEO_SECONDS). */
+  getTierTargetSeconds(videoLength: VideoLengthTier): number {
+    const cap = this.getMaxVideoSeconds();
+    const envByTier: Record<VideoLengthTier, string> = {
+      short: 'REPLICATE_SHORT_VIDEO_SECONDS',
+      medium: 'REPLICATE_MEDIUM_VIDEO_SECONDS',
+      long: 'REPLICATE_LONG_VIDEO_TARGET_SECONDS',
+    };
+    const defaultByTier: Record<VideoLengthTier, number> = {
+      short: 20,
+      medium: 40,
+      long: 60,
+    };
+    const raw = Number(
+      this.config.get<string>(envByTier[videoLength]) ??
+        String(defaultByTier[videoLength]),
+    );
+    const target = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : defaultByTier[videoLength];
+    return Math.min(target, cap);
   }
 
   getVideoSegmentConfig(videoLength: VideoLengthTier = 'short'): {
     segmentCount: number;
     secondsPerSegment: number;
   } {
+    const targetSeconds = this.getTierTargetSeconds(videoLength);
     const maxSeconds = Number(
       this.config.get<string>('REPLICATE_SEGMENT_MAX_SECONDS', '15'),
     );
     const maxSegments = Number(
-      this.config.get<string>('REPLICATE_LONG_VIDEO_MAX_SEGMENTS', '12'),
+      this.config.get<string>('REPLICATE_LONG_VIDEO_MAX_SEGMENTS', '4'),
     );
-
-    if (videoLength === 'medium') {
-      return { segmentCount: 1, secondsPerSegment: 10 };
-    }
-    if (videoLength === 'long') {
-      const targetSeconds = Number(
-        this.config.get<string>('REPLICATE_LONG_VIDEO_TARGET_SECONDS', '180'),
-      );
-      const segmentCount = Math.min(
-        maxSegments,
-        Math.max(1, Math.ceil(targetSeconds / maxSeconds)),
-      );
-      return { segmentCount, secondsPerSegment: maxSeconds };
-    }
-    return { segmentCount: 1, secondsPerSegment: 5 };
+    const segmentCap = Math.max(
+      1,
+      Math.floor(this.getMaxVideoSeconds() / maxSeconds),
+    );
+    const segmentCount = Math.min(
+      maxSegments,
+      segmentCap,
+      Math.max(1, Math.ceil(targetSeconds / maxSeconds)),
+    );
+    const secondsPerSegment = Math.min(
+      maxSeconds,
+      Math.max(3, Math.ceil(targetSeconds / segmentCount)),
+    );
+    return { segmentCount, secondsPerSegment };
   }
 
   resolveVideoModel(useCase: ReplicateUseCase): string {
@@ -145,10 +183,15 @@ export class ReplicateModelRouterService {
 
   buildTextToVideoPlan(
     prompt: string,
-    opts?: { aspectRatio?: string; videoLength?: VideoLengthTier },
+    opts?: {
+      aspectRatio?: string;
+      videoLength?: VideoLengthTier;
+      durationSeconds?: number;
+    },
   ): ReplicateRunPlan {
     const model = this.resolveVideoModel(ReplicateUseCase.TextToVideo);
-    const segmentSeconds = this.getSegmentSeconds(opts?.videoLength);
+    const segmentSeconds =
+      opts?.durationSeconds ?? this.getSegmentSeconds(opts?.videoLength);
     return {
       model,
       input: this.buildVideoInput(model, prompt, {
@@ -161,15 +204,21 @@ export class ReplicateModelRouterService {
 
   buildFacelessVideoPlan(
     prompt: string,
-    opts: { aspectRatio: string; videoLength?: VideoLengthTier },
+    opts: {
+      aspectRatio: string;
+      videoLength?: VideoLengthTier;
+      durationSeconds?: number;
+    },
   ): ReplicateRunPlan {
     const model = this.resolveVideoModel(ReplicateUseCase.FacelessVideo);
+    const segmentSeconds =
+      opts.durationSeconds ?? this.getSegmentSeconds(opts.videoLength);
     return {
       model,
       input: this.buildVideoInput(model, prompt, {
         aspectRatio: opts.aspectRatio,
         videoLength: opts.videoLength,
-        durationSeconds: this.getSegmentSeconds(opts.videoLength),
+        durationSeconds: segmentSeconds,
       }),
       timeoutMs: 300_000,
     };

@@ -22,9 +22,9 @@ export const CREATION_MODES = [
 ] as const;
 
 export const VIDEO_LENGTHS = [
-  { id: 'short', label: 'Short (15-60s)' },
-  { id: 'medium', label: 'Medium (1-3m)' },
-  { id: 'long', label: 'Long (3-10m)' },
+  { id: 'short', label: 'Short (20s)' },
+  { id: 'medium', label: 'Medium (40s)' },
+  { id: 'long', label: 'Long (1 min)' },
 ] as const;
 
 export const VOICE_STYLES = [

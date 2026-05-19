@@ -140,10 +140,11 @@ export class AiService {
       videoLength: args.videoLength,
       folder: 'auravid/creation/text-to-video',
       onProgress: args.onProgress,
-      buildPlan: (scenePrompt) =>
+      buildPlan: (scenePrompt, durationSeconds) =>
         this.modelRouter.buildTextToVideoPlan(scenePrompt, {
           videoLength: args.videoLength,
           aspectRatio: '16:9',
+          durationSeconds,
         }),
     });
   }
@@ -170,10 +171,11 @@ export class AiService {
       videoLength: args.videoLength,
       folder: 'auravid/creation/faceless-video',
       onProgress: args.onProgress,
-      buildPlan: (scenePrompt) =>
+      buildPlan: (scenePrompt, durationSeconds) =>
         this.modelRouter.buildFacelessVideoPlan(scenePrompt, {
           aspectRatio: args.aspectRatio,
           videoLength: args.videoLength,
+          durationSeconds,
         }),
     });
   }
@@ -209,10 +211,11 @@ export class AiService {
         videoLength: args.videoLength,
         folder: 'auravid/creation/youtube-repurpose',
         onProgress: args.onProgress,
-        buildPlan: (scenePrompt) =>
+        buildPlan: (scenePrompt, durationSeconds) =>
           this.modelRouter.buildTextToVideoPlan(scenePrompt, {
             videoLength: args.videoLength,
             aspectRatio: '9:16',
+            durationSeconds,
           }),
       });
     }
@@ -271,18 +274,24 @@ export class AiService {
       { imageUrl: args.photos[0] },
     );
 
-    const imageResult = await this.runImagePlan(
-      userId,
-      imagePlan,
-      'auravid/creation/photos-script',
-    );
-    const keyframeUrl = imageResult.cloudinary?.secureUrl ?? null;
-
     const animate =
       this.config.get<string>('REPLICATE_PHOTOS_SCRIPT_ANIMATE_VIDEO', 'true') ===
       'true';
 
-    if (!animate || !keyframeUrl) {
+    const [imageResult, videoPrompt] = await Promise.all([
+      this.runImagePlan(userId, imagePlan, 'auravid/creation/photos-script'),
+      animate
+        ? this.openAiService.generateVideoPrompt({
+            idea: `Animate this photo slideshow video. Narration: ${args.script}`,
+            style: 'smooth ken burns motion, social video',
+            tone: 'engaging',
+            targetAudience: 'general',
+          })
+        : Promise.resolve(null),
+    ]);
+    const keyframeUrl = imageResult.cloudinary?.secureUrl ?? null;
+
+    if (!animate || !keyframeUrl || !videoPrompt) {
       return {
         secureUrl: keyframeUrl,
         thumbnailUrl: keyframeUrl,
@@ -290,23 +299,17 @@ export class AiService {
       };
     }
 
-    const videoPrompt = await this.openAiService.generateVideoPrompt({
-      idea: `Animate this photo slideshow video. Narration: ${args.script}`,
-      style: 'smooth ken burns motion, social video',
-      tone: 'engaging',
-      targetAudience: 'general',
-    });
-
     try {
       const video = await this.runStudioSegmentedVideo(userId, {
         basePrompt: videoPrompt,
         videoLength: args.videoLength,
         folder: 'auravid/creation/photos-script',
-        buildPlan: (scenePrompt) =>
+        buildPlan: (scenePrompt, durationSeconds) =>
           this.modelRouter.buildImageToVideoPlan(scenePrompt, keyframeUrl, {
             videoLength: args.videoLength,
             aspectRatio: '9:16',
             useCase: ReplicateUseCase.PhotosScriptVideo,
+            durationSeconds,
           }),
       });
       return {
@@ -355,33 +358,42 @@ export class AiService {
           })
         : [args.basePrompt];
 
-    const outputVideoUrls: string[] = [];
-    let totalDuration = 0;
-    let model = '';
+    const maxParallel = this.modelRouter.getVideoMaxParallel();
+    const segmentResults = await this.mapWithConcurrency(
+      scenes,
+      scenes.length > 1 ? maxParallel : 1,
+      async (scenePrompt, index) => {
+        const plan = args.buildPlan(
+          scenePrompt,
+          segmentConfig.secondsPerSegment,
+        );
+        const result = await this.runVideoPlansUntilSuccess(
+          userId,
+          [plan],
+          args.folder,
+        );
+        return {
+          index,
+          model: plan.model,
+          url: result.cloudinary?.secureUrl,
+          duration:
+            result.cloudinary?.duration ?? segmentConfig.secondsPerSegment,
+        };
+      },
+      async (completedCount) => {
+        if (args.onProgress) {
+          const pct = Math.round(20 + (70 * completedCount) / scenes.length);
+          await args.onProgress(pct);
+        }
+      },
+    );
 
-    for (let i = 0; i < scenes.length; i++) {
-      const plan = args.buildPlan(
-        scenes[i],
-        segmentConfig.secondsPerSegment,
-      );
-      model = plan.model;
-      const result = await this.runVideoPlansUntilSuccess(
-        userId,
-        [plan],
-        args.folder,
-      );
-      const url = result.cloudinary?.secureUrl;
-      if (url) {
-        outputVideoUrls.push(url);
-      }
-      totalDuration +=
-        result.cloudinary?.duration ?? segmentConfig.secondsPerSegment;
-
-      if (args.onProgress) {
-        const pct = Math.round(20 + (70 * (i + 1)) / scenes.length);
-        await args.onProgress(pct);
-      }
-    }
+    segmentResults.sort((a, b) => a.index - b.index);
+    const outputVideoUrls = segmentResults
+      .map((s) => s.url)
+      .filter((url): url is string => Boolean(url));
+    const totalDuration = segmentResults.reduce((sum, s) => sum + s.duration, 0);
+    const model = segmentResults[segmentResults.length - 1]?.model ?? '';
 
     if (outputVideoUrls.length === 0) {
       throw new BadGatewayException('Video generation produced no outputs');
@@ -395,6 +407,40 @@ export class AiService {
       hasAudio: this.modelRouter.wantsVideoAudio(),
       segmentCount: scenes.length,
     };
+  }
+
+  /** Run async work over items with a concurrency cap; optional hook after each item completes. */
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T, index: number) => Promise<R>,
+    onItemComplete?: (completedCount: number) => void | Promise<void>,
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return [];
+    }
+    const results: R[] = new Array(items.length);
+    let nextIndex = 0;
+    let completed = 0;
+    const workerCount = Math.min(Math.max(1, limit), items.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const i = nextIndex++;
+          if (i >= items.length) {
+            break;
+          }
+          results[i] = await fn(items[i], i);
+          completed += 1;
+          if (onItemComplete) {
+            await onItemComplete(completed);
+          }
+        }
+      }),
+    );
+
+    return results;
   }
 
   private async runVideoPlansUntilSuccess(

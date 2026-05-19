@@ -53,6 +53,13 @@ export class ReplicateService {
 
     const predictionId = create.data.id;
     const timeoutMs = params.timeoutMs ?? 180_000;
+    const pollIntervalMs = Number(
+      this.config.get<string>('REPLICATE_POLL_INTERVAL_MS', '1000'),
+    );
+    const pollMs =
+      Number.isFinite(pollIntervalMs) && pollIntervalMs >= 500
+        ? pollIntervalMs
+        : 1000;
     const start = Date.now();
 
     while (Date.now() - start < timeoutMs) {
@@ -83,7 +90,7 @@ export class ReplicateService {
         );
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
 
     throw new GatewayTimeoutException('Replicate prediction timed out');
