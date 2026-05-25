@@ -1,31 +1,38 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ReplicateUseCase } from './constants/replicate-use-case';
 import { GenerateCharacterDto } from './dto/generate-character.dto';
 import { GenerateImageDto } from './dto/generate-image.dto';
 import { GeneratePromptDto } from './dto/generate-prompt.dto';
 import { RemixVideoDto } from './dto/remix-video.dto';
 import { OpenAiService } from './services/openai.service';
 import { CloudinaryService } from './services/cloudinary.service';
-import {
-  ReplicateModelRouterService,
-  ReplicateRunPlan,
-} from './services/replicate-model-router.service';
-import { ReplicateService } from './services/replicate.service';
+import { ReplicateModelRouterService } from './services/replicate-model-router.service';
+import { HybridVideoPipelineService } from './services/hybrid-video-pipeline.service';
+import { MediaProviderChainService } from './services/media-provider-chain.service';
+import { OpenAiMediaService } from './services/openai-media.service';
+import { FfmpegRendererService } from './services/ffmpeg-renderer.service';
+import { OpenAiTtsService } from './services/openai-tts.service';
 import {
   applyEnglishImagePrompt,
   isEnglishLanguage,
 } from './constants/generation-language';
 import type { VideoLengthTier } from './constants/replicate-use-case';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 @Injectable()
 export class AiService {
   constructor(
     private readonly config: ConfigService,
     private readonly openAiService: OpenAiService,
-    private readonly replicateService: ReplicateService,
     private readonly cloudinaryService: CloudinaryService,
     private readonly modelRouter: ReplicateModelRouterService,
+    private readonly hybridPipeline: HybridVideoPipelineService,
+    private readonly mediaChain: MediaProviderChainService,
+    private readonly openAiMedia: OpenAiMediaService,
+    private readonly ffmpegRenderer: FfmpegRendererService,
+    private readonly openAiTts: OpenAiTtsService,
   ) {}
 
   async generatePrompt(dto: GeneratePromptDto) {
@@ -47,76 +54,48 @@ export class AiService {
       ? applyEnglishImagePrompt(rawPrompt)
       : rawPrompt;
 
-    const plan = this.modelRouter.buildImagePlan(
-      ReplicateUseCase.ImageGenerate,
-      prompt,
-      {
+    const image = await this.openAiMedia.generateStudioImage(userId, prompt, {
+      folder: 'auravid/generated-images',
         aspectRatio: dto.aspectRatio,
-      },
-    );
-    if (dto.negativePrompt) {
-      plan.input.negative_prompt = dto.negativePrompt;
-    }
-
-    return this.runImagePlan(userId, plan, 'auravid/generated-images');
+      negativePrompt: dto.negativePrompt,
+    });
+    return {
+      predictionId: null,
+      model: image.model,
+      outputs: image.outputs,
+      cloudinary: image.cloudinary,
+    };
   }
 
   async generateCharacter(userId: string, dto: GenerateCharacterDto) {
     const characterPrompt =
       await this.openAiService.generateCharacterPrompt(dto);
-    const plan = this.modelRouter.buildImagePlan(
-      ReplicateUseCase.CharacterGenerate,
-      characterPrompt,
-      { aspectRatio: '1:1' },
-    );
-    const image = await this.runImagePlan(
+    const image = await this.openAiMedia.generateStudioImage(
       userId,
-      plan,
-      'auravid/generated-characters',
+      characterPrompt,
+      {
+        folder: 'auravid/generated-characters',
+        aspectRatio: '1:1',
+      },
     );
     return {
       prompt: characterPrompt,
-      ...image,
-      model: plan.model,
+      predictionId: null,
+      model: image.model,
+      outputs: image.outputs,
+      cloudinary: image.cloudinary,
     };
   }
 
   async remixVideo(userId: string, dto: RemixVideoDto) {
-    const remixPrompt = await this.openAiService.generateVideoPrompt({
+    await this.openAiService.generateVideoPrompt({
       idea: `Remix this source video: ${dto.sourceVideoUrl}. Instruction: ${dto.instruction}`,
       style: 'video remix',
       tone: 'creative but faithful to source intent',
     });
-
-    const plans = dto.model
-      ? [
-          {
-            model: dto.model,
-            input: {
-              prompt: remixPrompt,
-              video: dto.sourceVideoUrl,
-              ...dto.inputOverrides,
-            },
-            timeoutMs: 300_000,
-          } satisfies ReplicateRunPlan,
-        ]
-      : this.modelRouter.buildRemixPlan(remixPrompt, {
-          sourceVideoUrl: dto.sourceVideoUrl,
-        });
-
-    const result = await this.runVideoPlansUntilSuccess(
-      userId,
-      plans,
-      'auravid/generated-videos',
+    throw new BadGatewayException(
+      'Video remix is disabled in OpenAI-only mode. Use text-to-video or photos-script generation instead.',
     );
-
-    return {
-      predictionId: result.predictionId,
-      model: result.model,
-      prompt: remixPrompt,
-      outputs: result.outputUrls,
-      cloudinary: result.cloudinary,
-    };
   }
 
   async studioTextToVideo(
@@ -135,17 +114,12 @@ export class AiService {
       style: args.visualStyle.replaceAll('_', ' '),
       targetAudience: 'general',
     });
-    return this.runStudioSegmentedVideo(userId, {
+    return this.runAiVideoPipeline(userId, {
       basePrompt: enriched,
       videoLength: args.videoLength,
       folder: 'auravid/creation/text-to-video',
+      aspectRatio: '16:9',
       onProgress: args.onProgress,
-      buildPlan: (scenePrompt, durationSeconds) =>
-        this.modelRouter.buildTextToVideoPlan(scenePrompt, {
-          videoLength: args.videoLength,
-          aspectRatio: '16:9',
-          durationSeconds,
-        }),
     });
   }
 
@@ -160,23 +134,18 @@ export class AiService {
     },
   ) {
     const idea = `Faceless ${args.niche} video about: ${args.topic}. Target framing: ${args.aspectRatio}.`;
-    const enriched = await this.openAiService.generateVideoPrompt({
+    if (!this.hybridPipeline.isHybridEnabled()) {
+      throw new BadGatewayException(
+        'OpenAI video generation is not configured (set OPENAI_API_KEY)',
+      );
+    }
+    return this.hybridPipeline.runHybridPipeline(userId, {
       idea,
-      tone: 'clear and engaging',
-      style: 'faceless social video',
-      targetAudience: args.niche,
-    });
-    return this.runStudioSegmentedVideo(userId, {
-      basePrompt: enriched,
+      aspectRatio: args.aspectRatio,
       videoLength: args.videoLength,
       folder: 'auravid/creation/faceless-video',
+      tone: 'clear and engaging',
       onProgress: args.onProgress,
-      buildPlan: (scenePrompt, durationSeconds) =>
-        this.modelRouter.buildFacelessVideoPlan(scenePrompt, {
-          aspectRatio: args.aspectRatio,
-          videoLength: args.videoLength,
-          durationSeconds,
-        }),
     });
   }
 
@@ -198,6 +167,23 @@ export class AiService {
       .filter(Boolean)
       .join('\n');
 
+    if (this.hybridPipeline.isHybridEnabled()) {
+      const hybridIdea = [
+        idea,
+        args.customScript ? `Script: ${args.customScript}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return this.hybridPipeline.runHybridPipeline(userId, {
+        idea: hybridIdea,
+        aspectRatio: '9:16',
+        videoLength: args.videoLength,
+        folder: 'auravid/creation/youtube-repurpose',
+        tone: 'punchy viral short',
+        onProgress: args.onProgress,
+      });
+    }
+
     const enriched = await this.openAiService.generateVideoPrompt({
       idea,
       tone: 'punchy',
@@ -205,43 +191,14 @@ export class AiService {
       targetAudience: 'general',
     });
 
-    if (args.videoLength === 'long') {
-      return this.runStudioSegmentedVideo(userId, {
-        basePrompt: enriched,
-        videoLength: args.videoLength,
-        folder: 'auravid/creation/youtube-repurpose',
-        onProgress: args.onProgress,
-        buildPlan: (scenePrompt, durationSeconds) =>
-          this.modelRouter.buildTextToVideoPlan(scenePrompt, {
-            videoLength: args.videoLength,
-            aspectRatio: '9:16',
-            durationSeconds,
-          }),
-      });
-    }
-
-    const startImage = args.additionalPhotos[0];
-    const plans = this.modelRouter.buildYoutubeRepurposePlans(enriched, {
-      youtubeUrl: args.youtubeUrl,
-      startImageUrl: startImage,
+    return this.runAiVideoPipeline(userId, {
+      basePrompt: enriched,
       videoLength: args.videoLength,
+      folder: 'auravid/creation/youtube-repurpose',
+      aspectRatio: '9:16',
+      onProgress: args.onProgress,
+      startImageUrl: args.additionalPhotos[0],
     });
-
-    const result = await this.runVideoPlansUntilSuccess(
-      userId,
-      plans,
-      'auravid/creation/youtube-repurpose',
-    );
-    return {
-      secureUrl: result.cloudinary?.secureUrl ?? null,
-      outputVideoUrls: result.cloudinary?.secureUrl
-        ? [result.cloudinary.secureUrl]
-        : [],
-      durationSeconds: result.cloudinary?.duration,
-      model: result.model,
-      hasAudio: this.modelRouter.wantsVideoAudio(),
-      segmentCount: 1,
-    };
   }
 
   async studioPhotosScript(
@@ -268,30 +225,101 @@ export class AiService {
       targetAudience: 'social feed viewers',
     });
 
-    const imagePlan = this.modelRouter.buildImagePlan(
-      ReplicateUseCase.PhotosScriptImage,
-      enriched,
-      { imageUrl: args.photos[0] },
-    );
+    const useKenBurns =
+      this.config.get<string>('VIDEO_PHOTOS_SCRIPT_KEN_BURNS', 'true') === 'true';
 
-    const animate =
-      this.config.get<string>('REPLICATE_PHOTOS_SCRIPT_ANIMATE_VIDEO', 'true') ===
-      'true';
+    const imagePromise = this.openAiMedia.generateStudioImage(userId, enriched, {
+      folder: 'auravid/creation/photos-script',
+      aspectRatio: '9:16',
+    });
 
-    const [imageResult, videoPrompt] = await Promise.all([
-      this.runImagePlan(userId, imagePlan, 'auravid/creation/photos-script'),
-      animate
-        ? this.openAiService.generateVideoPrompt({
-            idea: `Animate this photo slideshow video. Narration: ${args.script}`,
-            style: 'smooth ken burns motion, social video',
-            tone: 'engaging',
-            targetAudience: 'general',
-          })
-        : Promise.resolve(null),
+    const [imageResult, narration] = await Promise.all([
+      imagePromise,
+      this.openAiService.generateVideoPrompt({
+        idea: `Narration for photo video: ${args.script}`,
+        tone: 'engaging',
+        style: 'social',
+        targetAudience: 'general',
+      }).catch(() => args.script),
     ]);
     const keyframeUrl = imageResult.cloudinary?.secureUrl ?? null;
 
-    if (!animate || !keyframeUrl || !videoPrompt) {
+    if (!keyframeUrl) {
+      return {
+        secureUrl: null,
+        thumbnailUrl: null,
+        isVideo: false,
+      };
+    }
+
+    if (useKenBurns) {
+      try {
+        const targetSeconds = this.modelRouter.getTierTargetSeconds(
+          args.videoLength ?? 'short',
+        );
+        const tempDir =
+          this.config.get<string>('FFMPEG_TEMP_DIR') ??
+          path.join(os.tmpdir(), 'auravid-render');
+        fs.mkdirSync(tempDir, { recursive: true });
+        const outputPath = path.join(
+          tempDir,
+          `photos-${userId}-${Date.now()}.mp4`,
+        );
+        const composedPath = path.join(
+          tempDir,
+          `photos-composed-${userId}-${Date.now()}.mp4`,
+        );
+        const narrationAudio = await this.openAiTts.synthesizeNarration(
+          narration,
+        );
+        await this.ffmpegRenderer.createKenBurnsFromImage(
+          keyframeUrl,
+          targetSeconds,
+          '9:16',
+          outputPath,
+        );
+        await this.ffmpegRenderer.compose({
+          scenes: [
+            {
+              filePath: outputPath,
+              durationSeconds: targetSeconds,
+              caption: 'Stay consistent every day',
+            },
+          ],
+          narrationPath: narrationAudio.filePath,
+          aspectRatio: '9:16',
+          outputPath: composedPath,
+        });
+        const uploaded = await this.cloudinaryService.uploadFromFile({
+          filePath: composedPath,
+          folder: 'auravid/creation/photos-script',
+          publicIdPrefix: `user-${userId}`,
+          resourceType: 'video',
+        });
+        try {
+          fs.unlinkSync(outputPath);
+          fs.unlinkSync(composedPath);
+          fs.unlinkSync(narrationAudio.filePath);
+        } catch {
+          /* ignore */
+        }
+        return {
+          secureUrl: uploaded.secure_url,
+          thumbnailUrl: keyframeUrl,
+          durationSeconds: targetSeconds,
+          outputVideoUrls: [uploaded.secure_url],
+          hasAudio: true,
+          isVideo: true,
+        };
+      } catch {
+        /* fall through to AI animate */
+      }
+    }
+
+    const animate =
+      this.config.get<string>('VIDEO_PHOTOS_SCRIPT_ANIMATE_VIDEO', 'true') ===
+      'true';
+    if (!animate) {
       return {
         secureUrl: keyframeUrl,
         thumbnailUrl: keyframeUrl,
@@ -300,17 +328,12 @@ export class AiService {
     }
 
     try {
-      const video = await this.runStudioSegmentedVideo(userId, {
-        basePrompt: videoPrompt,
+      const video = await this.runAiVideoPipeline(userId, {
+        basePrompt: narration,
         videoLength: args.videoLength,
         folder: 'auravid/creation/photos-script',
-        buildPlan: (scenePrompt, durationSeconds) =>
-          this.modelRouter.buildImageToVideoPlan(scenePrompt, keyframeUrl, {
-            videoLength: args.videoLength,
-            aspectRatio: '9:16',
-            useCase: ReplicateUseCase.PhotosScriptVideo,
-            durationSeconds,
-          }),
+        aspectRatio: '9:16',
+        startImageUrl: keyframeUrl,
       });
       return {
         secureUrl: video.secureUrl,
@@ -329,23 +352,18 @@ export class AiService {
     }
   }
 
-  async runStudioSegmentedVideo(
+  /** OpenAI video pipeline with optional multi-segment composition. */
+  private async runAiVideoPipeline(
     userId: string,
     args: {
       basePrompt: string;
       videoLength?: VideoLengthTier;
       folder: string;
-      buildPlan: (scenePrompt: string, durationSeconds: number) => ReplicateRunPlan;
+      aspectRatio: string;
       onProgress?: (progress: number) => void | Promise<void>;
+      startImageUrl?: string;
     },
-  ): Promise<{
-    secureUrl: string | null;
-    outputVideoUrls: string[];
-    durationSeconds?: number;
-    model: string;
-    hasAudio: boolean;
-    segmentCount: number;
-  }> {
+  ) {
     const segmentConfig = this.modelRouter.getVideoSegmentConfig(
       args.videoLength,
     );
@@ -358,167 +376,111 @@ export class AiService {
           })
         : [args.basePrompt];
 
-    const maxParallel = this.modelRouter.getVideoMaxParallel();
-    const segmentResults = await this.mapWithConcurrency(
-      scenes,
-      scenes.length > 1 ? maxParallel : 1,
-      async (scenePrompt, index) => {
-        const plan = args.buildPlan(
-          scenePrompt,
-          segmentConfig.secondsPerSegment,
-        );
-        const result = await this.runVideoPlansUntilSuccess(
-          userId,
-          [plan],
-          args.folder,
-        );
-        return {
-          index,
-          model: plan.model,
-          url: result.cloudinary?.secureUrl,
-          duration:
-            result.cloudinary?.duration ?? segmentConfig.secondsPerSegment,
-        };
-      },
-      async (completedCount) => {
-        if (args.onProgress) {
-          const pct = Math.round(20 + (70 * completedCount) / scenes.length);
-          await args.onProgress(pct);
-        }
-      },
+    const sourceUrls: string[] = [];
+    const clipPaths: string[] = [];
+    let model = 'openai';
+    const tempDir =
+      this.config.get<string>('FFMPEG_TEMP_DIR') ??
+      path.join(os.tmpdir(), 'auravid-render');
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    for (let i = 0; i < scenes.length; i++) {
+      const result = await this.mediaChain.generateVideo({
+        prompt: `${scenes[i]}. No text, no signs, no logos, no writing, no subtitles, no screens.`,
+        aspectRatio: args.aspectRatio,
+        durationSeconds: segmentConfig.secondsPerSegment,
+        imageUrl: i === 0 ? args.startImageUrl : undefined,
+      });
+      const url = result.outputUrls[0];
+      if (url) {
+        const clipPath = await this.downloadVideoToTemp(url, `ai-${userId}-${i}`);
+        clipPaths.push(clipPath);
+        sourceUrls.push(url);
+        model = `${result.provider}:${result.model}`;
+      }
+      if (args.onProgress) {
+        const pct = Math.round(20 + (70 * (i + 1)) / scenes.length);
+        await args.onProgress(pct);
+      }
+    }
+
+    if (clipPaths.length === 0) {
+      throw new BadGatewayException('AI video pipeline produced no outputs');
+    }
+
+    const totalDuration = this.modelRouter.getTierTargetSeconds(
+      args.videoLength ?? 'short',
     );
+    let narrationPath: string | undefined;
+    try {
+      const narration = await this.openAiTts.synthesizeNarration(
+        scenes
+          .map((scene, i) => `Scene ${i + 1}. ${scene}`)
+          .join(' ')
+          .slice(0, 1800),
+      );
+      narrationPath = narration.filePath;
+    } catch (err) {
+      if (this.config.get<string>('VIDEO_REQUIRE_NARRATION', 'true') === 'true') {
+        throw new BadGatewayException(
+          `Narration generation failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
 
-    segmentResults.sort((a, b) => a.index - b.index);
-    const outputVideoUrls = segmentResults
-      .map((s) => s.url)
-      .filter((url): url is string => Boolean(url));
-    const totalDuration = segmentResults.reduce((sum, s) => sum + s.duration, 0);
-    const model = segmentResults[segmentResults.length - 1]?.model ?? '';
+    const outputPath = path.join(tempDir, `ai-final-${userId}-${Date.now()}.mp4`);
+    const composed = await this.ffmpegRenderer.compose({
+      scenes: clipPaths.map((filePath, i) => ({
+        filePath,
+        durationSeconds: totalDuration / clipPaths.length,
+        caption: `Scene ${i + 1}`,
+      })),
+      narrationPath,
+      aspectRatio: args.aspectRatio,
+      outputPath,
+    });
+    const uploaded = await this.cloudinaryService.uploadFromFile({
+      filePath: composed.outputPath,
+      folder: args.folder,
+      publicIdPrefix: `user-${userId}`,
+      resourceType: 'video',
+    });
 
-    if (outputVideoUrls.length === 0) {
-      throw new BadGatewayException('Video generation produced no outputs');
+    for (const filePath of [...clipPaths, outputPath, narrationPath].filter(
+      (p): p is string => Boolean(p),
+    )) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        /* ignore */
+      }
     }
 
     return {
-      secureUrl: outputVideoUrls[0],
-      outputVideoUrls,
-      durationSeconds: totalDuration,
+      secureUrl: uploaded.secure_url,
+      outputVideoUrls: sourceUrls,
+      durationSeconds: composed.durationSeconds,
       model,
-      hasAudio: this.modelRouter.wantsVideoAudio(),
+      hasAudio: Boolean(narrationPath),
       segmentCount: scenes.length,
     };
   }
 
-  /** Run async work over items with a concurrency cap; optional hook after each item completes. */
-  private async mapWithConcurrency<T, R>(
-    items: T[],
-    limit: number,
-    fn: (item: T, index: number) => Promise<R>,
-    onItemComplete?: (completedCount: number) => void | Promise<void>,
-  ): Promise<R[]> {
-    if (items.length === 0) {
-      return [];
-    }
-    const results: R[] = new Array(items.length);
-    let nextIndex = 0;
-    let completed = 0;
-    const workerCount = Math.min(Math.max(1, limit), items.length);
-
-    await Promise.all(
-      Array.from({ length: workerCount }, async () => {
-        while (true) {
-          const i = nextIndex++;
-          if (i >= items.length) {
-            break;
-          }
-          results[i] = await fn(items[i], i);
-          completed += 1;
-          if (onItemComplete) {
-            await onItemComplete(completed);
-          }
-        }
-      }),
-    );
-
-    return results;
-  }
-
-  private async runVideoPlansUntilSuccess(
-    userId: string,
-    plans: ReplicateRunPlan[],
-    folder: string,
-  ) {
-    let lastError: unknown;
-    for (const plan of plans) {
-      try {
-        const prediction = await this.replicateService.runModel(plan);
-        const firstOutputUrl = prediction.outputUrls[0];
-        if (!firstOutputUrl) {
-          continue;
-        }
-        const uploaded = await this.cloudinaryService.uploadFromUrl({
-          sourceUrl: firstOutputUrl,
-          folder,
-          publicIdPrefix: `user-${userId}`,
-          resourceType: 'video',
-        });
-        return {
-          predictionId: prediction.predictionId,
-          model: plan.model,
-          outputUrls: prediction.outputUrls,
-          cloudinary: {
-            publicId: uploaded.public_id,
-            secureUrl: uploaded.secure_url,
-            duration: uploaded.duration,
-            format: uploaded.format,
-          },
-        };
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    throw lastError instanceof BadGatewayException
-      ? lastError
-      : new BadGatewayException(
-          lastError instanceof Error
-            ? lastError.message
-            : 'Video generation failed for all configured models',
-        );
-  }
-
-  private async runImagePlan(
-    userId: string,
-    plan: ReplicateRunPlan,
-    folder: string,
-  ) {
-    const prediction = await this.replicateService.runModel(plan);
-    const firstOutputUrl = prediction.outputUrls[0];
-    if (!firstOutputUrl) {
-      return {
-        predictionId: prediction.predictionId,
-        model: plan.model,
-        cloudinary: null,
-        outputs: [],
-      };
-    }
-
-    const uploaded = await this.cloudinaryService.uploadFromUrl({
-      sourceUrl: firstOutputUrl,
-      folder,
-      publicIdPrefix: `user-${userId}`,
-      resourceType: 'image',
+  private async downloadVideoToTemp(url: string, prefix: string): Promise<string> {
+    const axios = (await import('axios')).default;
+    const tempDir =
+      this.config.get<string>('FFMPEG_TEMP_DIR') ??
+      path.join(os.tmpdir(), 'auravid-render');
+    fs.mkdirSync(tempDir, { recursive: true });
+    const out = path.join(tempDir, `${prefix}-${Date.now()}.mp4`);
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 120_000,
     });
-
-    return {
-      predictionId: prediction.predictionId,
-      model: plan.model,
-      outputs: prediction.outputUrls,
-      cloudinary: {
-        publicId: uploaded.public_id,
-        secureUrl: uploaded.secure_url,
-        width: uploaded.width,
-        height: uploaded.height,
-      },
-    };
+    fs.writeFileSync(out, Buffer.from(response.data));
+    return out;
   }
+
 }

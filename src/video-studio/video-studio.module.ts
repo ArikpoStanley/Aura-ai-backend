@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AiModule } from '../ai/ai.module';
+import { QueueModule } from '../queue/queue.module';
 import {
   VideoProject,
   VideoProjectSchema,
@@ -14,6 +15,7 @@ import { VideoStudioService } from './video-studio.service';
     MongooseModule.forFeature([
       { name: VideoProject.name, schema: VideoProjectSchema },
     ]),
+    QueueModule,
     AiModule,
   ],
   controllers: [VideoStudioController],

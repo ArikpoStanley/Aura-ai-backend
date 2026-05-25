@@ -51,9 +51,10 @@ Copy `.env.example` to `.env` and fill in values.
 
 | Variable                                                                 | Purpose                      |
 | ------------------------------------------------------------------------ | ---------------------------- |
-| `OPENAI_API_KEY`                                                         | Prompt engineering (ChatGPT) |
-| `OPENAI_MODEL`                                                           | e.g. `gpt-4o-mini`           |
-| `REPLICATE_API_TOKEN`                                                    | Video/image generation       |
+| `OPENAI_API_KEY`                                                         | ChatGPT prompts, GPT Image, Sora video, and TTS |
+| `OPENAI_MODEL`                                                           | Text/planning model, e.g. `gpt-4o-mini` |
+| `OPENAI_VIDEO_MODEL`                                                     | Sora video model, e.g. `sora-2` |
+| `OPENAI_IMAGE_MODEL`                                                     | GPT Image model, e.g. `gpt-image-1` |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Uploaded output storage      |
 
 
@@ -63,19 +64,42 @@ Copy `.env.example` to `.env` and fill in values.
 | Variable                              | Default | Purpose                                                |
 | ------------------------------------- | ------- | ------------------------------------------------------ |
 | `GENERATION_DEFAULT_LANGUAGE`         | `en`    | English (US) for prompts, dialogue, and on-screen text |
-| `REPLICATE_VIDEO_GENERATE_AUDIO`      | `true`  | Use Kling with native audio (Wan models are silent). Alias: `REPLICATE_KLING_GENERATE_AUDIO` |
-| `REPLICATE_USE_PREMIUM`               | `false` | Prefer `*_PREMIUM` Replicate model env vars            |
-| `REPLICATE_MAX_VIDEO_SECONDS`         | `60`    | Hard cap on total generated duration (all tiers)       |
-| `REPLICATE_SHORT_VIDEO_SECONDS`       | `20`    | Target when `videoLength` is `short`                   |
-| `REPLICATE_MEDIUM_VIDEO_SECONDS`      | `40`    | Target when `videoLength` is `medium`                  |
-| `REPLICATE_LONG_VIDEO_TARGET_SECONDS` | `60`    | Target when `videoLength` is `long`                    |
-| `REPLICATE_SEGMENT_MAX_SECONDS`       | `15`    | Seconds per segment (Replicate clip cap)               |
-| `REPLICATE_LONG_VIDEO_MAX_SEGMENTS`   | `4`     | Max clips for one `long` project (4 × 15s = 1 min)     |
-| `REPLICATE_VIDEO_MAX_PARALLEL`        | `3`     | Concurrent Replicate jobs for `long` multi-segment videos (max 6) |
-| `REPLICATE_POLL_INTERVAL_MS`          | `1000`  | How often to poll Replicate while a clip is generating |
+| `VIDEO_MAX_SECONDS`                   | `30`    | Hard cap on total generated duration (all tiers)       |
+| `VIDEO_SHORT_SECONDS`                 | `10`    | Target when `videoLength` is `short`                   |
+| `VIDEO_MEDIUM_SECONDS`                | `20`    | Target when `videoLength` is `medium`                  |
+| `VIDEO_LONG_SECONDS`                  | `30`    | Target when `videoLength` is `long`                    |
+| `VIDEO_SEGMENT_MAX_SECONDS`           | `12`    | Max seconds per Sora clip before FFmpeg composition    |
+| `VIDEO_LONG_MAX_SEGMENTS`             | `3`     | Max clips for one `long` project                       |
 
 
-See `.env.example` for full Replicate model routing variables.
+**OpenAI media pipeline**
+
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `VIDEO_PIPELINE_HYBRID` | `true` | Faceless + YouTube repurpose use OpenAI scenes + Sora clips + TTS + FFmpeg |
+| `REDIS_URL` | — | BullMQ queue; omit to run jobs in-process on API server |
+| `OPENAI_TTS_MODEL` / `OPENAI_TTS_VOICE` | `tts-1` / `alloy` | Narration for videos |
+| `FFMPEG_TEMP_DIR` | system temp | Local render workspace (FFmpeg must be on `PATH`) |
+
+**Run locally**
+
+```bash
+# API
+npm run start:dev
+
+# Worker (requires REDIS_URL + Mongo + same .env as API)
+npm run build && npm run start:worker
+```
+
+**Production:** run **two processes** — web (`start:prod`) and worker (`start:worker`). Install FFmpeg on the worker image. Without `REDIS_URL`, generation still works but is not durable across restarts.
+
+| Mode | Pipeline |
+| ---- | -------- |
+| `faceless_video` | OpenAI scenes → Sora clips → OpenAI TTS → FFmpeg → one MP4 |
+| `youtube_repurpose` | Same hybrid pipeline (9:16) |
+| `text_to_video` | OpenAI prompt → Sora clips → OpenAI TTS → FFmpeg → one MP4 |
+| `photos_script` | OpenAI image keyframe → OpenAI TTS → FFmpeg Ken Burns; optional Sora animate |
 
 ## API Overview
 
@@ -106,7 +130,7 @@ Use this section when wiring the React (or other) client to the backend.
 
 ### Async video projects (critical)
 
-Video Studio **does not** return finished media on `POST`. Generation runs in the background (Replicate + Cloudinary).
+Video Studio **does not** return finished media on `POST`. Generation runs in the background (OpenAI + FFmpeg + Cloudinary).
 
 
 | Step | Action                                                                                                 |
@@ -151,7 +175,7 @@ All project endpoints return the same **project card** shape:
 | `progress`        | 0–100; updates during multi-segment `long` jobs (~20→90 per segment)                                   |
 | `outputVideoUrl`  | Primary playback URL (first segment when `long`)                                                       |
 | `outputVideoUrls` | **All segments** in order — use for playlist UI or client-side stitching                               |
-| `hasAudio`        | `true` when Kling audio was requested (`REPLICATE_VIDEO_GENERATE_AUDIO`); Wan-only outputs are `false` |
+| `hasAudio`        | `true` when OpenAI narration is generated and muxed into the final video |
 | `durationSeconds` | Sum of segment durations (approximate)                                                                 |
 | `videoLength`     | User-selected tier: `short` | `medium` | `long` (see below)                                            |
 
@@ -163,12 +187,12 @@ Dropdown labels in `GET /video-studio/options` are marketing-friendly. **Actual 
 
 | `videoLength` | Backend behavior                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `short`       | **20s** total (2 clips × ~10s when using Kling’s 15s cap)                                                  |
-| `medium`      | **40s** total (~3 clips)                                                                                   |
-| `long`        | **60s** / 1 min total (4 clips × 15s). Multiple URLs in `outputVideoUrls`.                                 |
+| `short`       | **10s** final video                                                                                         |
+| `medium`      | **20s** final video                                                                                         |
+| `long`        | **30s** final video. `outputVideoUrl` is the composed MP4; `outputVideoUrls` may list source clips          |
 
 
-Recommend showing estimated time/cost in the UI for `long` (many Replicate jobs; segments run in parallel up to `REPLICATE_VIDEO_MAX_PARALLEL`). There is **no** single merged MP4 from the API yet — play segments in sequence or stitch on the client.
+Recommend showing estimated time/cost in the UI for `long`; it requires multiple Sora clips plus FFmpeg composition.
 
 ### Language
 
@@ -189,7 +213,7 @@ Prefer **mode-specific** routes (stricter validation) over the generic `POST /vi
 
 ### Photos + script edge case
 
-If animation fails or `REPLICATE_PHOTOS_SCRIPT_ANIMATE_VIDEO=false`, the project may complete with a **still image** only (`outputVideoUrl` = keyframe, `hasAudio: false`). Treat `outputVideoUrls.length === 0` with a non-null `outputVideoUrl` as image-only success.
+If animation fails or `VIDEO_PHOTOS_SCRIPT_ANIMATE_VIDEO=false`, the project may complete with a **still image** only (`outputVideoUrl` = keyframe, `hasAudio: false`). Treat `outputVideoUrls.length === 0` with a non-null `outputVideoUrl` as image-only success.
 
 ### CORS
 
@@ -508,9 +532,9 @@ No body.
   ],
   "dropdowns": {
     "videoLengths": [
-      { "id": "short", "label": "Short (20s)" },
-      { "id": "medium", "label": "Medium (40s)" },
-      { "id": "long", "label": "Long (1 min)" }
+      { "id": "short", "label": "Short (10s)" },
+      { "id": "medium", "label": "Medium (20s)" },
+      { "id": "long", "label": "Long (30s)" }
     ],
     "voiceStyles": [
       { "id": "professional_male", "label": "Professional male" },

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AiService } from '../ai/ai.service';
+import { VideoGenerationQueueService } from '../queue/video-generation-queue.service';
 import { CreationMode } from './dto/create-video-project.dto';
 import { VideoProjectStatus } from './dto/list-video-projects.dto';
 import {
@@ -17,15 +18,32 @@ export class VideoStudioGenerationService {
     @InjectModel(VideoProject.name)
     private readonly projectModel: Model<VideoProjectDocument>,
     private readonly aiService: AiService,
+    private readonly videoQueue: VideoGenerationQueueService,
   ) {}
 
-  /** Fire-and-forget: runs Replicate + Cloudinary after project row exists. */
+  /** Enqueue durable job, or run in-process when REDIS_URL is unset. */
   scheduleProjectGeneration(projectId: string, userId: string): void {
-    void this.run(projectId, userId).catch((err: unknown) => {
+    if (this.videoQueue.isQueueEnabled()) {
+      void this.videoQueue.enqueue({ projectId, userId }).catch((err: unknown) => {
+        this.logger.error(
+          `Failed to enqueue project ${projectId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      return;
+    }
+    void this.executeProjectGeneration(projectId, userId).catch((err: unknown) => {
       this.logger.error(
         `Generation failed for project ${projectId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
+  }
+
+  /** Called by BullMQ worker or in-process fallback. */
+  async executeProjectGeneration(
+    projectId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.run(projectId, userId);
   }
 
   private async run(projectId: string, userId: string): Promise<void> {
@@ -134,7 +152,12 @@ export class VideoStudioGenerationService {
           },
         )
         .exec();
-    } catch {
+    } catch (err: unknown) {
+      this.logger.error(
+        `Project ${projectId} generation failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       await this.projectModel
         .updateOne(
           { _id: projectId },

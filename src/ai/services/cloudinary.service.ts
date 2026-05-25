@@ -43,4 +43,32 @@ export class CloudinaryService {
       format: typeof result.format === 'string' ? result.format : undefined,
     };
   }
+
+  async uploadFromFile(options: {
+    filePath: string;
+    folder: string;
+    publicIdPrefix: string;
+    resourceType?: 'image' | 'video' | 'auto';
+  }): Promise<{
+    public_id: string;
+    secure_url: string;
+    duration?: number;
+    format?: string;
+  }> {
+    const result = (await cloudinary.uploader.upload(options.filePath, {
+      folder: options.folder,
+      public_id: `${options.publicIdPrefix}-${Date.now()}`,
+      resource_type: options.resourceType ?? 'auto',
+      overwrite: true,
+    })) as Record<string, unknown>;
+
+    return {
+      public_id: typeof result.public_id === 'string' ? result.public_id : '',
+      secure_url:
+        typeof result.secure_url === 'string' ? result.secure_url : '',
+      duration:
+        typeof result.duration === 'number' ? result.duration : undefined,
+      format: typeof result.format === 'string' ? result.format : undefined,
+    };
+  }
 }

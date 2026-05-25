@@ -112,6 +112,69 @@ export class OpenAiService {
     });
   }
 
+  /** Scenes for hybrid pipeline: narration line + stock-video search query per scene. */
+  async generateHybridScenes(input: {
+    idea: string;
+    sceneCount: number;
+    secondsPerScene: number;
+    tone?: string;
+  }): Promise<Array<{ narration: string; searchQuery: string; caption: string }>> {
+    const userPrompt = this.withLanguageRules([
+      `Create exactly ${input.sceneCount} scenes for a short-form video.`,
+      `Each scene is ~${input.secondsPerScene} seconds.`,
+      'Return ONLY a JSON array of objects with keys: narration, searchQuery, caption.',
+      'narration: one spoken English sentence for voiceover.',
+      'searchQuery: 2-5 English words for stock video search; avoid text, signs, logos, documents, screens, and writing.',
+      'caption: short English on-screen text (max 8 words).',
+      'Do not use any non-English words.',
+      `Concept: ${input.idea}`,
+      `Tone: ${input.tone ?? 'engaging'}`,
+    ]);
+
+    const raw = await this.complete(userPrompt, 0.5, input.idea);
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const scenes = parsed
+          .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+          .map((item) => ({
+            narration: this.ensureEnglishCue(
+              String(item.narration ?? '').trim(),
+              input.idea,
+            ),
+            searchQuery: this.ensureEnglishCue(
+              String(item.searchQuery ?? item.search_query ?? 'abstract').trim(),
+              'cinematic b-roll no text',
+            ),
+            caption: this.ensureEnglishCue(
+              String(item.caption ?? '').trim(),
+              'Keep moving',
+            ),
+          }))
+          .filter((s) => s.narration || s.searchQuery);
+        if (scenes.length > 0) {
+          return scenes.slice(0, input.sceneCount);
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+
+    return Array.from({ length: input.sceneCount }, (_, i) => ({
+      narration: `${input.idea}. Scene ${i + 1}.`,
+      searchQuery: 'cinematic b-roll no text',
+      caption: `Scene ${i + 1}`,
+    }));
+  }
+
+  private ensureEnglishCue(value: string, fallback: string): string {
+    const text = value.trim();
+    if (!text || /[^\u0000-\u007F]/.test(text)) {
+      return fallback;
+    }
+    return text;
+  }
+
   private async complete(
     userPrompt: string,
     temperature: number,

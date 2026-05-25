@@ -9,6 +9,7 @@ import { AppService } from './app.service';
 import { AiModule } from './ai/ai.module';
 import { AuthModule } from './auth/auth.module';
 import { StudioModule } from './studio/studio.module';
+import { QueueModule } from './queue/queue.module';
 import { VideoStudioModule } from './video-studio/video-studio.module';
 
 @Module({
@@ -50,6 +51,7 @@ import { VideoStudioModule } from './video-studio/video-studio.module';
       }),
       inject: [ConfigService],
     }),
+    QueueModule,
     AiModule,
     AuthModule,
     VideoStudioModule,
