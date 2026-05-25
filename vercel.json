@@ -1,7 +1,7 @@
 {
     "version": 2,
-    "buildCommand": "npm run build",
-    "installCommand": "npm install",
+    "installCommand": "yarn install --frozen-lockfile --production=false",
+    "buildCommand": "yarn build",
     "rewrites": [
       { "source": "/(.*)", "destination": "/api" }
     ],
