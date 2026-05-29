@@ -9,6 +9,13 @@ import {
   VideoProject,
   VideoProjectDocument,
 } from './schemas/video-project.schema';
+import { classifyGenerationFailure } from './utils/generation-error';
+
+export type ProjectGenerationResult = {
+  ok: boolean;
+  retryable: boolean;
+  reason?: string;
+};
 
 @Injectable()
 export class VideoStudioGenerationService {
@@ -42,18 +49,34 @@ export class VideoStudioGenerationService {
   async executeProjectGeneration(
     projectId: string,
     userId: string,
-  ): Promise<void> {
-    await this.run(projectId, userId);
+  ): Promise<ProjectGenerationResult> {
+    return this.run(projectId, userId);
   }
 
-  private async run(projectId: string, userId: string): Promise<void> {
+  private async run(
+    projectId: string,
+    userId: string,
+  ): Promise<ProjectGenerationResult> {
     const project = await this.projectModel.findById(projectId).exec();
     if (!project || project.userId !== userId) {
-      return;
+      return { ok: false, retryable: false, reason: 'Project not found' };
     }
 
     await this.projectModel
-      .updateOne({ _id: projectId }, { $set: { progress: 20 } })
+      .updateOne(
+        { _id: projectId },
+        {
+          $set: { progress: 20 },
+          $unset: {
+            failureCode: '',
+            failureReason: '',
+            failureRetryable: '',
+            failureProvider: '',
+            failureProviderJobId: '',
+            failureRawMessage: '',
+          },
+        },
+      )
       .exec();
 
     try {
@@ -79,11 +102,19 @@ export class VideoStudioGenerationService {
                 hasAudio:
                   out.isVideo && 'hasAudio' in out ? Boolean(out.hasAudio) : false,
                 durationSeconds: out.durationSeconds,
+                failureRetryable: false,
+              },
+              $unset: {
+                failureCode: '',
+                failureReason: '',
+                failureProvider: '',
+                failureProviderJobId: '',
+                failureRawMessage: '',
               },
             },
           )
           .exec();
-        return;
+        return { ok: true, retryable: false };
       }
 
       const onProgress = async (progress: number) => {
@@ -130,10 +161,26 @@ export class VideoStudioGenerationService {
           await this.projectModel
             .updateOne(
               { _id: projectId },
-              { $set: { status: VideoProjectStatus.Failed, progress: 0 } },
+              {
+                $set: {
+                  status: VideoProjectStatus.Failed,
+                  progress: 0,
+                  failureCode: 'UNSUPPORTED_VIDEO_MODE',
+                  failureReason:
+                    'This video creation mode is not supported by the backend.',
+                  failureRetryable: false,
+              failureProvider: null,
+              failureProviderJobId: null,
+              failureRawMessage: null,
+                },
+              },
             )
             .exec();
-          return;
+          return {
+            ok: false,
+            retryable: false,
+            reason: 'Unsupported video creation mode',
+          };
       }
 
       await this.projectModel
@@ -148,11 +195,21 @@ export class VideoStudioGenerationService {
               hasAudio: out.hasAudio ?? false,
               thumbnailUrl: out.secureUrl ?? null,
               durationSeconds: out.durationSeconds,
+              failureRetryable: false,
+            },
+            $unset: {
+              failureCode: '',
+              failureReason: '',
+              failureProvider: '',
+              failureProviderJobId: '',
+              failureRawMessage: '',
             },
           },
         )
         .exec();
+      return { ok: true, retryable: false };
     } catch (err: unknown) {
+      const failure = classifyGenerationFailure(err);
       this.logger.error(
         `Project ${projectId} generation failed: ${
           err instanceof Error ? err.message : String(err)
@@ -161,9 +218,25 @@ export class VideoStudioGenerationService {
       await this.projectModel
         .updateOne(
           { _id: projectId },
-          { $set: { status: VideoProjectStatus.Failed, progress: 0 } },
+          {
+            $set: {
+              status: VideoProjectStatus.Failed,
+              progress: 0,
+              failureCode: failure.code,
+              failureReason: failure.reason,
+              failureRetryable: failure.retryable,
+              failureProvider: failure.provider ?? null,
+              failureProviderJobId: failure.providerJobId ?? null,
+              failureRawMessage: failure.rawMessage ?? null,
+            },
+          },
         )
         .exec();
+      return {
+        ok: false,
+        retryable: failure.retryable,
+        reason: failure.reason,
+      };
     }
   }
 }

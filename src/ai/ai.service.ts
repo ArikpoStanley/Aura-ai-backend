@@ -8,6 +8,10 @@ import { OpenAiService } from './services/openai.service';
 import { CloudinaryService } from './services/cloudinary.service';
 import { ReplicateModelRouterService } from './services/replicate-model-router.service';
 import { HybridVideoPipelineService } from './services/hybrid-video-pipeline.service';
+import {
+  makeSoraSafeBrollPrompt,
+  sanitizeForVideoGeneration,
+} from './utils/moderation-safe-prompt';
 import { MediaProviderChainService } from './services/media-provider-chain.service';
 import { OpenAiMediaService } from './services/openai-media.service';
 import { FfmpegRendererService } from './services/ffmpeg-renderer.service';
@@ -133,10 +137,13 @@ export class AiService {
       onProgress?: (progress: number) => void | Promise<void>;
     },
   ) {
-    const idea = `Faceless ${args.niche} video about: ${args.topic}. Target framing: ${args.aspectRatio}.`;
+    const rawIdea = `Faceless ${args.niche} video about: ${args.topic}. Target framing: ${args.aspectRatio}.`;
+    const idea = this.mediaChain.requiresStrictVideoPromptSafety()
+      ? sanitizeForVideoGeneration(rawIdea)
+      : rawIdea;
     if (!this.hybridPipeline.isHybridEnabled()) {
       throw new BadGatewayException(
-        'OpenAI video generation is not configured (set OPENAI_API_KEY)',
+        'Video generation is not configured (set VIDEO_MEDIA_PROVIDER with GOOGLE_API_KEY or OPENAI_API_KEY)',
       );
     }
     return this.hybridPipeline.runHybridPipeline(userId, {
@@ -373,8 +380,10 @@ export class AiService {
             idea: args.basePrompt,
             segmentCount: segmentConfig.segmentCount,
             secondsPerSegment: segmentConfig.secondsPerSegment,
+            strictVisualSafety: this.mediaChain.requiresStrictVideoPromptSafety(),
           })
         : [args.basePrompt];
+    const strictVisualSafety = this.mediaChain.requiresStrictVideoPromptSafety();
 
     const sourceUrls: string[] = [];
     const clipPaths: string[] = [];
@@ -386,7 +395,12 @@ export class AiService {
 
     for (let i = 0; i < scenes.length; i++) {
       const result = await this.mediaChain.generateVideo({
-        prompt: `${scenes[i]}. No text, no signs, no logos, no writing, no subtitles, no screens.`,
+        prompt: strictVisualSafety
+          ? makeSoraSafeBrollPrompt(
+              `${scenes[i]}. No text, no signs, no logos, no writing, no subtitles, no screens.`,
+              i,
+            )
+          : `${scenes[i]}. No copyrighted logos, no real people, no celebrities.`,
         aspectRatio: args.aspectRatio,
         durationSeconds: segmentConfig.secondsPerSegment,
         imageUrl: i === 0 ? args.startImageUrl : undefined,

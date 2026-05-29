@@ -51,10 +51,11 @@ Copy `.env.example` to `.env` and fill in values.
 
 | Variable                                                                 | Purpose                      |
 | ------------------------------------------------------------------------ | ---------------------------- |
-| `OPENAI_API_KEY`                                                         | ChatGPT prompts, GPT Image, Sora video, and TTS |
+| `OPENAI_API_KEY`                                                         | ChatGPT prompts, GPT Image, fallback Sora video, and TTS |
 | `OPENAI_MODEL`                                                           | Text/planning model, e.g. `gpt-4o-mini` |
-| `OPENAI_VIDEO_MODEL`                                                     | Sora video model, e.g. `sora-2` |
+| `OPENAI_VIDEO_MODEL`                                                     | Sora fallback video model, e.g. `sora-2` |
 | `OPENAI_IMAGE_MODEL`                                                     | GPT Image model, e.g. `gpt-image-1` |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY`                                      | Google AI Studio API key for Veo video generation |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Uploaded output storage      |
 
 
@@ -68,17 +69,25 @@ Copy `.env.example` to `.env` and fill in values.
 | `VIDEO_SHORT_SECONDS`                 | `10`    | Target when `videoLength` is `short`                   |
 | `VIDEO_MEDIUM_SECONDS`                | `20`    | Target when `videoLength` is `medium`                  |
 | `VIDEO_LONG_SECONDS`                  | `30`    | Target when `videoLength` is `long`                    |
-| `VIDEO_SEGMENT_MAX_SECONDS`           | `12`    | Max seconds per Sora clip before FFmpeg composition    |
+| `VIDEO_SEGMENT_MAX_SECONDS`           | `12`    | Max seconds per provider clip before FFmpeg composition |
 | `VIDEO_LONG_MAX_SEGMENTS`             | `3`     | Max clips for one `long` project                       |
 
 
-**OpenAI media pipeline**
+**Video media pipeline**
 
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
-| `VIDEO_PIPELINE_HYBRID` | `true` | Faceless + YouTube repurpose use OpenAI scenes + Sora clips + TTS + FFmpeg |
+| `VIDEO_PIPELINE_HYBRID` | `true` | Faceless + YouTube repurpose use AI scenes + video clips + TTS + FFmpeg |
+| `VIDEO_MEDIA_PROVIDER` | `auto` | `google` for Google Veo, `openai` for Sora, or `auto` to prefer Google when configured |
+| `GOOGLE_VEO_MODEL` | `veo-3.1-generate-preview` | Google Veo model from Gemini API / AI Studio |
+| `GOOGLE_VEO_RESOLUTION` | `720p` | Veo output resolution; 1080p requires 8s clips and higher latency/cost |
+| `GOOGLE_VEO_GENERATE_AUDIO` | `false` | Keep false because backend currently adds OpenAI TTS during FFmpeg composition |
+| `GOOGLE_VEO_MAX_WAIT_MS` | `900000` | Max wait per Veo clip (15 min) |
 | `REDIS_URL` | — | BullMQ queue; omit to run jobs in-process on API server |
+| `OPENAI_VIDEO_MAX_WAIT_MS` | `1800000` | Max wait per Sora fallback clip (30 min); raise if jobs timeout |
+| `VIDEO_WORKER_CONCURRENCY` | `1` | Parallel jobs per worker; keep `1` for heavy video workloads |
+| `VIDEO_QUEUE_ATTEMPTS` / `VIDEO_QUEUE_BACKOFF_MS` | `3` / `60000` | BullMQ retries for transient timeouts |
 | `OPENAI_TTS_MODEL` / `OPENAI_TTS_VOICE` | `tts-1` / `alloy` | Narration for videos |
 | `FFMPEG_TEMP_DIR` | system temp | Local render workspace (FFmpeg must be on `PATH`) |
 
@@ -96,10 +105,10 @@ npm run build && npm run start:worker
 
 | Mode | Pipeline |
 | ---- | -------- |
-| `faceless_video` | OpenAI scenes → Sora clips → OpenAI TTS → FFmpeg → one MP4 |
+| `faceless_video` | OpenAI scenes → Google Veo clips (or Sora fallback) → OpenAI TTS → FFmpeg → one MP4 |
 | `youtube_repurpose` | Same hybrid pipeline (9:16) |
-| `text_to_video` | OpenAI prompt → Sora clips → OpenAI TTS → FFmpeg → one MP4 |
-| `photos_script` | OpenAI image keyframe → OpenAI TTS → FFmpeg Ken Burns; optional Sora animate |
+| `text_to_video` | OpenAI prompt → Google Veo clips (or Sora fallback) → OpenAI TTS → FFmpeg → one MP4 |
+| `photos_script` | OpenAI image keyframe → OpenAI TTS → FFmpeg Ken Burns; optional provider animation |
 
 ## API Overview
 
@@ -117,6 +126,19 @@ There is **no** `/api/v1` prefix — routes are mounted at the root (e.g. `http:
 ## Frontend integration guide
 
 Use this section when wiring the React (or other) client to the backend.
+
+### Google Veo migration impact
+
+The frontend does **not** need a new endpoint integration for the Google Veo migration. Keep using the existing `/video-studio/*` and `/ai/*` routes, JWT auth, and project polling flow.
+
+Do update or verify these frontend assumptions:
+
+- Do not hardcode provider names such as Replicate, Fal, Flux, Pixabay, Sora, or Veo in loading/error copy. The backend selects the configured video provider, composes the final MP4, then uploads final media to Cloudinary.
+- Do not expect finished media from create requests. Video Studio creation still returns a project card immediately and finishes in the background through Redis + worker + FFmpeg.
+- Prefer `GET /video-studio/options` for duration labels. Current tiers are `short` = 10s, `medium` = 20s, and `long` = 30s.
+- Use `outputVideoUrl` as the primary playback URL when a project completes. Treat `outputVideoUrls` as supporting/generated clip URLs, not the main final video.
+- Hide or disable any UI that calls `/ai/videos/remix`; video remix is disabled and returns an error telling users to use text-to-video or photos-script instead.
+- For photos/reference images, send direct image URLs, preferably Cloudinary URLs. Share-page URLs such as ChatGPT share links are not valid media inputs.
 
 ### Authentication
 
@@ -155,14 +177,17 @@ All project endpoints return the same **project card** shape:
   "status": "completed",
   "progress": 100,
   "videoLength": "long",
-  "durationSeconds": 60,
-  "thumbnailUrl": "https://res.cloudinary.com/.../thumb.mp4",
-  "outputVideoUrl": "https://res.cloudinary.com/.../segment-1.mp4",
+  "durationSeconds": 30,
+  "thumbnailUrl": "https://res.cloudinary.com/.../final.mp4",
+  "outputVideoUrl": "https://res.cloudinary.com/.../final.mp4",
   "outputVideoUrls": [
-    "https://res.cloudinary.com/.../segment-1.mp4",
-    "https://res.cloudinary.com/.../segment-2.mp4"
+    "https://res.cloudinary.com/.../clip-1.mp4",
+    "https://res.cloudinary.com/.../clip-2.mp4"
   ],
   "hasAudio": true,
+  "failureCode": null,
+  "failureReason": null,
+  "failureRetryable": false,
   "createdAt": "2026-05-01T12:20:00.000Z",
   "updatedAt": "2026-05-01T12:45:00.000Z"
 }
@@ -171,13 +196,18 @@ All project endpoints return the same **project card** shape:
 
 | Field             | Frontend usage                                                                                         |
 | ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `status`          | `in_progress` | `completed` | `failed`                                                                 |
+| `status`          | `in_progress`, `completed`, or `failed`                                                                |
 | `progress`        | 0–100; updates during multi-segment `long` jobs (~20→90 per segment)                                   |
-| `outputVideoUrl`  | Primary playback URL (first segment when `long`)                                                       |
-| `outputVideoUrls` | **All segments** in order — use for playlist UI or client-side stitching                               |
+| `outputVideoUrl`  | Primary playback URL for the completed Cloudinary asset                                                |
+| `outputVideoUrls` | Supporting/generated clip URLs in order; useful for debug or source clip display                       |
 | `hasAudio`        | `true` when OpenAI narration is generated and muxed into the final video |
 | `durationSeconds` | Sum of segment durations (approximate)                                                                 |
-| `videoLength`     | User-selected tier: `short` | `medium` | `long` (see below)                                            |
+| `videoLength`     | User-selected tier: `short`, `medium`, or `long` (see below)                                           |
+| `failureCode`     | Machine-readable failure code when `status === "failed"`                                               |
+| `failureReason`   | Frontend-safe explanation to show users when generation fails                                           |
+| `failureRetryable`| `true` when the UI can offer a retry without asking users to rewrite the prompt                         |
+
+When `status === "failed"`, show `failureReason` instead of a generic error. For example, OpenAI moderation failures return `OPENAI_MODERATION_BLOCKED` with guidance to remove sensitive religious, political, violent, sexual, celebrity, real-person, logo, or readable-text details.
 
 
 ### `videoLength` — UI labels vs backend behavior
@@ -192,7 +222,7 @@ Dropdown labels in `GET /video-studio/options` are marketing-friendly. **Actual 
 | `long`        | **30s** final video. `outputVideoUrl` is the composed MP4; `outputVideoUrls` may list source clips          |
 
 
-Recommend showing estimated time/cost in the UI for `long`; it requires multiple Sora clips plus FFmpeg composition.
+Recommend showing estimated time/cost in the UI for `long`; it requires multiple provider clips plus FFmpeg composition.
 
 ### Language
 
@@ -213,7 +243,7 @@ Prefer **mode-specific** routes (stricter validation) over the generic `POST /vi
 
 ### Photos + script edge case
 
-If animation fails or `VIDEO_PHOTOS_SCRIPT_ANIMATE_VIDEO=false`, the project may complete with a **still image** only (`outputVideoUrl` = keyframe, `hasAudio: false`). Treat `outputVideoUrls.length === 0` with a non-null `outputVideoUrl` as image-only success.
+If optional animation is disabled or fails, the project may complete as a Ken Burns/FFmpeg render instead of provider animation. Treat a non-null `outputVideoUrl` with `status: "completed"` as success, and use `hasAudio` to decide whether to show an audio badge.
 
 ### CORS
 
@@ -600,6 +630,9 @@ Generic create (all modes). Prefer the mode-specific routes below when possible.
   "outputVideoUrl": null,
   "outputVideoUrls": [],
   "hasAudio": false,
+  "failureCode": null,
+  "failureReason": null,
+  "failureRetryable": false,
   "createdAt": "2026-05-01T12:20:00.000Z",
   "updatedAt": "2026-05-01T12:20:00.000Z"
 }
@@ -746,7 +779,7 @@ Expands an idea into a production-ready prompt (OpenAI). Output is English by de
 
 ### `POST /ai/images/generate`
 
-Generates an image via Replicate, uploads to Cloudinary.
+Generates an image with OpenAI, then uploads it to Cloudinary.
 
 **Request**
 
@@ -763,9 +796,9 @@ Generates an image via Replicate, uploads to Cloudinary.
 
 ```json
 {
-  "predictionId": "...",
-  "model": "black-forest-labs/flux-schnell",
-  "outputs": ["https://replicate.delivery/..."],
+  "predictionId": null,
+  "model": "gpt-image-1",
+  "outputs": ["https://res.cloudinary.com/.../image.png"],
   "cloudinary": {
     "publicId": "auravid/generated-images/...",
     "secureUrl": "https://res.cloudinary.com/...",
@@ -777,7 +810,7 @@ Generates an image via Replicate, uploads to Cloudinary.
 
 ### `POST /ai/characters/generate`
 
-Character portrait (OpenAI prompt + Flux).
+Character portrait generated with an OpenAI prompt and OpenAI image model.
 
 **Request**
 
@@ -792,7 +825,7 @@ Character portrait (OpenAI prompt + Flux).
 
 ### `POST /ai/videos/remix`
 
-Remix/transform a source video URL.
+Remix/transform a source video URL. This endpoint is currently disabled in the current provider pipeline.
 
 **Request**
 
@@ -809,16 +842,9 @@ Remix/transform a source video URL.
 
 ```json
 {
-  "predictionId": "...",
-  "model": "kwaivgi/kling-v3-video",
-  "prompt": "...",
-  "outputs": ["https://replicate.delivery/..."],
-  "cloudinary": {
-    "publicId": "...",
-    "secureUrl": "https://res.cloudinary.com/.../video.mp4",
-    "duration": 8,
-    "format": "mp4"
-  }
+  "statusCode": 502,
+  "message": "Video remix is disabled in the current provider pipeline. Use text-to-video or photos-script generation instead.",
+  "error": "Bad Gateway"
 }
 ```
 
@@ -1102,7 +1128,7 @@ Updates default voice and captions style.
 
 - All request payloads are validated with Nest `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
 - Facebook OAuth was removed; only Google OAuth is exposed.
-- Video generation requires outbound access to `api.replicate.com`, OpenAI, and Cloudinary from the server.
+- Video generation requires outbound access to OpenAI and Cloudinary from the server. The API and worker also need Redis access when durable background jobs are enabled.
 - Rate limiting: global throttler (`THROTTLE_TTL_SECONDS`, `THROTTLE_LIMIT`).
 - Production example base URL (if deployed): `https://aura-ai-backend-eight.vercel.app` — use the same route paths as local.
 

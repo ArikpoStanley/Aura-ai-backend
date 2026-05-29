@@ -3,6 +3,7 @@ import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { CloudinaryService } from './services/cloudinary.service';
 import { FfmpegRendererService } from './services/ffmpeg-renderer.service';
+import { GoogleVeoMediaService } from './services/google-veo-media.service';
 import { HybridVideoPipelineService } from './services/hybrid-video-pipeline.service';
 import { MediaProviderChainService } from './services/media-provider-chain.service';
 import { OpenAiMediaService } from './services/openai-media.service';
@@ -16,6 +17,7 @@ import { ReplicateModelRouterService } from './services/replicate-model-router.s
     AiService,
     OpenAiService,
     OpenAiMediaService,
+    GoogleVeoMediaService,
     OpenAiTtsService,
     ReplicateModelRouterService,
     MediaProviderChainService,

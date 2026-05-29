@@ -24,11 +24,25 @@ export class VideoGenerationQueueService implements OnModuleDestroy {
       return;
     }
     this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+    const attempts = Math.max(
+      1,
+      Number.parseInt(
+        this.config.get<string>('VIDEO_QUEUE_ATTEMPTS', '3'),
+        10,
+      ) || 3,
+    );
+    const backoffDelay = Math.max(
+      1000,
+      Number.parseInt(
+        this.config.get<string>('VIDEO_QUEUE_BACKOFF_MS', '60000'),
+        10,
+      ) || 60000,
+    );
     this.queue = new Queue<VideoGenerationJobPayload>(VIDEO_GENERATION_QUEUE, {
       connection: this.connection,
       defaultJobOptions: {
-        attempts: 2,
-        backoff: { type: 'exponential', delay: 5000 },
+        attempts,
+        backoff: { type: 'exponential', delay: backoffDelay },
         removeOnComplete: 100,
         removeOnFail: 50,
       },

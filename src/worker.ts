@@ -21,16 +21,29 @@ async function bootstrap() {
 
   const generationService = app.get(VideoStudioGenerationService);
   const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const concurrency = Math.max(
+    1,
+    Number.parseInt(process.env.VIDEO_WORKER_CONCURRENCY ?? '1', 10) || 1,
+  );
 
   const worker = new Worker<VideoGenerationJobPayload>(
     VIDEO_GENERATION_QUEUE,
     async (job) => {
-      await generationService.executeProjectGeneration(
+      const result = await generationService.executeProjectGeneration(
         job.data.projectId,
         job.data.userId,
       );
+      if (!result.ok && result.retryable) {
+        throw new Error(result.reason ?? 'Retryable video generation failure');
+      }
+      if (!result.ok) {
+        Logger.warn(
+          `Project ${job.data.projectId} failed without retry: ${result.reason ?? 'unknown reason'}`,
+          'VideoWorker',
+        );
+      }
     },
-    { connection, concurrency: 2 },
+    { connection, concurrency },
   );
 
   worker.on('completed', (job) => {
@@ -40,7 +53,10 @@ async function bootstrap() {
     Logger.error(`Job ${job?.id} failed: ${err.message}`, 'VideoWorker');
   });
 
-  Logger.log('Video generation worker started', 'VideoWorker');
+  Logger.log(
+    `Video generation worker started with concurrency ${concurrency}`,
+    'VideoWorker',
+  );
 
   const shutdown = async () => {
     await worker.close();

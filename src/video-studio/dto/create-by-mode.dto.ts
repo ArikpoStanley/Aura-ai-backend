@@ -89,7 +89,7 @@ export class CreateFacelessVideoDto {
 
   @IsString()
   @MinLength(3)
-  @MaxLength(2000)
+  @MaxLength(4000)
   topic: string;
 
   @IsEnum(Niche)

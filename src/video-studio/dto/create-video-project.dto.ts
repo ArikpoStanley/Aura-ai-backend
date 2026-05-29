@@ -110,7 +110,7 @@ export class CreateVideoProjectDto {
   @IsOptional()
   @IsString()
   @MinLength(3)
-  @MaxLength(2000)
+  @MaxLength(8000)
   topic?: string;
 
   @IsOptional()

@@ -5,6 +5,15 @@ import {
   ENGLISH_OPENAI_DIRECTIVES,
   isEnglishLanguage,
 } from '../constants/generation-language';
+import {
+  makeSoraSafeBrollPrompt,
+  sanitizeForVideoGeneration,
+} from '../utils/moderation-safe-prompt';
+
+const VIDEO_MODERATION_RULES = [
+  'Follow OpenAI video safety rules.',
+  'Avoid real people, celebrities, copyrighted characters, logos, weapons, gore, sexual content, and policy-sensitive content.',
+];
 
 @Injectable()
 export class OpenAiService {
@@ -76,14 +85,19 @@ export class OpenAiService {
     secondsPerSegment: number;
     tone?: string;
     style?: string;
+    strictVisualSafety?: boolean;
   }): Promise<string[]> {
+    const concept = input.strictVisualSafety
+      ? makeSoraSafeBrollPrompt(input.idea)
+      : input.idea;
     const userPrompt = this.withLanguageRules([
+      ...VIDEO_MODERATION_RULES,
       `Split this video concept into exactly ${input.segmentCount} sequential scenes.`,
       `Each scene is about ${input.secondsPerSegment} seconds of screen time.`,
       'Return ONLY a JSON array of strings, one prompt per scene, no markdown.',
       'Keep narrative continuity across scenes.',
       'Every scene prompt must specify English-only dialogue and on-screen text.',
-      `Concept: ${input.idea}`,
+      `Concept: ${concept}`,
       `Tone: ${input.tone ?? 'confident'}`,
       `Style: ${input.style ?? 'cinematic'}`,
     ]);
@@ -105,7 +119,7 @@ export class OpenAiService {
     }
 
     return Array.from({ length: input.segmentCount }, (_, i) => {
-      const base = `${input.idea}. Scene ${i + 1} of ${input.segmentCount}, ${input.style ?? 'cinematic'} style.`;
+      const base = `${concept}. Scene ${i + 1} of ${input.segmentCount}, ${input.style ?? 'cinematic'} style.`;
       return this.useEnglish
         ? `${base} English dialogue and on-screen text only.`
         : base;
@@ -118,16 +132,29 @@ export class OpenAiService {
     sceneCount: number;
     secondsPerScene: number;
     tone?: string;
+    strictVisualSafety?: boolean;
   }): Promise<Array<{ narration: string; searchQuery: string; caption: string }>> {
+    const concept = input.strictVisualSafety
+      ? makeSoraSafeBrollPrompt(input.idea)
+      : input.idea;
+    const safetyRules = input.strictVisualSafety
+      ? [
+          ...VIDEO_MODERATION_RULES,
+          'For Sora visual prompts, prefer object-only and environment-only b-roll. Avoid humanoids, wings, faces, title cards, captions, signs, and screens.',
+        ]
+      : VIDEO_MODERATION_RULES;
     const userPrompt = this.withLanguageRules([
+      ...safetyRules,
       `Create exactly ${input.sceneCount} scenes for a short-form video.`,
       `Each scene is ~${input.secondsPerScene} seconds.`,
       'Return ONLY a JSON array of objects with keys: narration, searchQuery, caption.',
       'narration: one spoken English sentence for voiceover.',
-      'searchQuery: 2-5 English words for stock video search; avoid text, signs, logos, documents, screens, and writing.',
-      'caption: short English on-screen text (max 8 words).',
+      input.strictVisualSafety
+        ? 'searchQuery: 2-6 English words describing only objects, environments, or tools. No people, no humanoids, no wings, no religious terms.'
+        : 'searchQuery: 2-8 English words describing the visual subject, setting, and action.',
+      'caption: short English phrase for UI only (max 8 words).',
       'Do not use any non-English words.',
-      `Concept: ${input.idea}`,
+      `Concept: ${concept}`,
       `Tone: ${input.tone ?? 'engaging'}`,
     ]);
 
@@ -138,17 +165,20 @@ export class OpenAiService {
         const scenes = parsed
           .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
           .map((item) => ({
-            narration: this.ensureEnglishCue(
+            narration: this.prepareVideoCue(
               String(item.narration ?? '').trim(),
-              input.idea,
+              'A cinematic renovation unfolds step by step.',
+              input.strictVisualSafety,
             ),
-            searchQuery: this.ensureEnglishCue(
+            searchQuery: this.prepareVideoCue(
               String(item.searchQuery ?? item.search_query ?? 'abstract').trim(),
-              'cinematic b-roll no text',
+              'wooden ship ocean cinematic',
+              input.strictVisualSafety,
             ),
-            caption: this.ensureEnglishCue(
+            caption: this.prepareVideoCue(
               String(item.caption ?? '').trim(),
-              'Keep moving',
+              'Restoration in progress',
+              input.strictVisualSafety,
             ),
           }))
           .filter((s) => s.narration || s.searchQuery);
@@ -160,11 +190,23 @@ export class OpenAiService {
       /* fall through */
     }
 
+    const safeIdea = input.strictVisualSafety
+      ? sanitizeForVideoGeneration(input.idea)
+      : input.idea;
     return Array.from({ length: input.sceneCount }, (_, i) => ({
-      narration: `${input.idea}. Scene ${i + 1}.`,
-      searchQuery: 'cinematic b-roll no text',
+      narration: `${safeIdea}. Scene ${i + 1}.`,
+      searchQuery: 'wooden ship ocean cinematic',
       caption: `Scene ${i + 1}`,
     }));
+  }
+
+  private prepareVideoCue(
+    value: string,
+    fallback: string,
+    strictVisualSafety?: boolean,
+  ): string {
+    const cue = this.ensureEnglishCue(value, fallback);
+    return strictVisualSafety ? sanitizeForVideoGeneration(cue) : cue;
   }
 
   private ensureEnglishCue(value: string, fallback: string): string {

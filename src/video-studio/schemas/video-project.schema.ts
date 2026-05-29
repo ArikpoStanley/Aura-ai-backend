@@ -53,6 +53,24 @@ export class VideoProject {
   @Prop({ default: false })
   hasAudio: boolean;
 
+  @Prop()
+  failureCode?: string;
+
+  @Prop()
+  failureReason?: string;
+
+  @Prop({ default: false })
+  failureRetryable: boolean;
+
+  @Prop()
+  failureProvider?: string;
+
+  @Prop()
+  failureProviderJobId?: string;
+
+  @Prop()
+  failureRawMessage?: string;
+
   @Prop({ enum: Object.values(VoiceStyle) })
   voiceStyle?: VoiceStyle;
 

@@ -78,6 +78,7 @@ export class VideoStudioService {
       topic: dto.topic,
       niche: dto.niche,
       aspectRatio: dto.aspectRatio,
+      failureRetryable: false,
     });
     this.videoStudioGeneration.scheduleProjectGeneration(
       project._id.toString(),
@@ -240,6 +241,12 @@ export class VideoStudioService {
       outputVideoUrl: project.outputVideoUrl ?? null,
       outputVideoUrls: project.outputVideoUrls ?? [],
       hasAudio: project.hasAudio ?? false,
+      failureCode: project.failureCode ?? null,
+      failureReason: project.failureReason ?? null,
+      failureRetryable: project.failureRetryable ?? false,
+      failureProvider: project.failureProvider ?? null,
+      failureProviderJobId: project.failureProviderJobId ?? null,
+      failureRawMessage: project.failureRawMessage ?? null,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };

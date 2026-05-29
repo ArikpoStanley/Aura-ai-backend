@@ -10,6 +10,9 @@ import { MediaProviderChainService } from './media-provider-chain.service';
 import { OpenAiTtsService } from './openai-tts.service';
 import { OpenAiService } from './openai.service';
 import { ReplicateModelRouterService } from './replicate-model-router.service';
+import {
+  makeSoraSafeBrollPrompt,
+} from '../utils/moderation-safe-prompt';
 
 export type HybridPipelineResult = {
   secureUrl: string | null;
@@ -76,11 +79,13 @@ export class HybridVideoPipelineService {
       await args.onProgress(25);
     }
 
+    const strictVisualSafety = this.mediaChain.requiresStrictVideoPromptSafety();
     const scenes = await this.openAiService.generateHybridScenes({
       idea: args.idea,
       sceneCount,
       secondsPerScene,
       tone: args.tone,
+      strictVisualSafety,
     });
 
     if (args.onProgress) {
@@ -89,18 +94,36 @@ export class HybridVideoPipelineService {
 
     const clipPaths: string[] = [];
     const sourceUrls: string[] = [];
-    const scenePrompt = (scene: (typeof scenes)[number]) =>
-      `${scene.searchQuery}. ${scene.caption}. No text, no signs, no logos, no writing, no subtitles, no screens, clean cinematic background only.`;
+    const scenePrompt = (scene: (typeof scenes)[number], index: number) => {
+      const prompt = strictVisualSafety
+        ? `${scene.searchQuery}. Cinematic ASMR renovation b-roll of objects and environments only. No people, no humanoids, no wings, no readable text, no logos, no signs, no screens.`
+        : `${scene.searchQuery}. ${scene.caption}. Cinematic short-form video, ${args.aspectRatio}, rich visual detail, smooth camera motion. No copyrighted logos, no real people, no celebrities.`;
+      return strictVisualSafety
+        ? makeSoraSafeBrollPrompt(prompt, index)
+        : prompt.replace(/\s+/g, ' ').trim();
+    };
 
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       let clipPath: string | null = null;
+      const prompt = scenePrompt(scene, i);
+      this.logger.log(
+        `${this.mediaChain.selectedProviderName() ?? 'video provider'} scene ${i + 1}/${scenes.length}: ${prompt.slice(0, 280)}`,
+      );
 
-      const generated = await this.mediaChain.generateVideo({
-        prompt: scenePrompt(scene),
-        aspectRatio: args.aspectRatio,
-        durationSeconds: secondsPerScene,
-      });
+      let generated;
+      try {
+        generated = await this.mediaChain.generateVideo({
+          prompt,
+          aspectRatio: args.aspectRatio,
+          durationSeconds: secondsPerScene,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `${this.mediaChain.selectedProviderName() ?? 'video provider'} scene ${i + 1}/${scenes.length} failed: ${message}. Prompt sent: ${prompt.slice(0, 220)}`,
+        );
+      }
       const url = generated.outputUrls[0];
       if (url) {
         clipPath = await this.downloadToTemp(url, `openai-${i}`);

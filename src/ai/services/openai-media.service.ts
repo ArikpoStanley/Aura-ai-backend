@@ -9,6 +9,7 @@ import type {
   VideoGenerationRequest,
   VideoGenerationResult,
 } from '../providers/media-generation.provider';
+import { ProviderError } from '../utils/provider-error';
 import { CloudinaryService } from './cloudinary.service';
 
 type OpenAiVideoJob = {
@@ -51,7 +52,7 @@ export class OpenAiMediaService implements MediaGenerationProvider {
       this.config.get<string>('OPENAI_VIDEO_POLL_INTERVAL_MS', '5000'),
     );
     this.maxWaitMs = Number(
-      this.config.get<string>('OPENAI_VIDEO_MAX_WAIT_MS', '900000'),
+      this.config.get<string>('OPENAI_VIDEO_MAX_WAIT_MS', '1800000'),
     );
     this.imageTimeoutMs = Number(
       this.config.get<string>('OPENAI_IMAGE_TIMEOUT_MS', '180000'),
@@ -86,6 +87,9 @@ export class OpenAiMediaService implements MediaGenerationProvider {
     }
 
     const created = await this.postJson<OpenAiVideoJob>('/videos', body);
+    this.logger.log(
+      `Sora job ${created.id} created (${seconds}s): ${request.prompt.slice(0, 280)}`,
+    );
     const completed = await this.pollVideoJob(created.id);
     const clipPath = path.join(
       this.tempDir,
@@ -201,14 +205,17 @@ export class OpenAiMediaService implements MediaGenerationProvider {
         return job;
       }
       if (job.status === 'failed') {
-        throw new Error(
-          job.error?.message ?? 'OpenAI video generation failed',
-        );
+        const message = job.error?.message ?? 'OpenAI video generation failed';
+        this.logger.warn(`Sora job ${videoId} failed: ${JSON.stringify(job)}`);
+        throw new ProviderError(message, 'openai', videoId, job);
       }
       await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
     }
-    throw new Error(
+    throw new ProviderError(
       `OpenAI video generation timed out after ${this.maxWaitMs}ms`,
+      'openai',
+      videoId,
+      { id: videoId, status: 'timeout', maxWaitMs: this.maxWaitMs },
     );
   }
 
@@ -243,8 +250,9 @@ export class OpenAiMediaService implements MediaGenerationProvider {
       return response.data;
     } catch (err) {
       const message = this.extractAxiosError(err);
-      this.logger.warn(`OpenAI ${path} failed: ${message}`);
-      throw new Error(message);
+      const raw = this.extractAxiosRawError(err);
+      this.logger.warn(`OpenAI ${path} failed: ${JSON.stringify(raw)}`);
+      throw new ProviderError(message, 'openai', undefined, raw);
     }
   }
 
@@ -264,6 +272,20 @@ export class OpenAiMediaService implements MediaGenerationProvider {
       return data?.error?.message ?? err.message;
     }
     return err instanceof Error ? err.message : String(err);
+  }
+
+  private extractAxiosRawError(err: unknown): unknown {
+    if (axios.isAxiosError(err)) {
+      return {
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data,
+        message: err.message,
+      };
+    }
+    return err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : err;
   }
 
   /** Sora supports 4, 8, 12 (and 16/20 on some flows). */
